@@ -12,8 +12,11 @@ that a Roslyn source generator turns into a typed schema, AST records, and a
 visitor surface at build time.
 
 > **Status (May 2026):** .NET 10, C# 14, Native AOT-clean, xUnit v3 test suite
-> (330 tests). Library code is allocation-light, reflection-free, and trim-/AOT-
+> (345 tests). Library code is allocation-light, reflection-free, and trim-/AOT-
 > compatible. Single NuGet package ships the runtime *and* the source generator.
+> The YAML schema also supports a **preprocessor block** (directives + conditional
+> compilation) for grammars that need a CPP-like pass between lexer and parser —
+> see `examples/CMinus/`.
 
 ---
 
@@ -138,7 +141,8 @@ This fork keeps the algorithmic core but pursues a different set of properties:
 | `examples/Json/` | Exe | Real JSON parser via the YAML pipeline. ~50-line `IVisitor` implementation builds `Dictionary<string,object>` / `List<object>` / primitives. |
 | `examples/Latex.Grammar/` | Library | Shared LaTeX grammar partial class. Source generator runs once on `latex.lalr.yaml` and emits the `Latex` partial (Schema + AST records + `IVisitor<T>`). Both LaTeX consumers `ProjectReference` this — one grammar, multiple visitors. |
 | `examples/Latex/` | Exe (`PublishAot=true`) | Wikipedia-style LaTeX math formulas via the shared `Latex.Grammar`. Visitor renders to Unicode plain text. (Box-layout / sixel renderer for the same grammar lives in `sharpastro/Console.Lib/examples/LatexConsole/`.) |
-| `LALR.CC.Tests/` | xUnit v3 (Microsoft.Testing.Platform) | 330 tests covering the regex-AST builders, byte/codepoint DFAs, lexer/parser pipeline, diagnostics, schema layer, the source generator (incl. end-to-end "emit → compile → load → parse"), and parser semantics regressions. |
+| `examples/CMinus/` | Exe | Multi-file C99-subset compiler — strings, floats/doubles, `char*` byte arithmetic, `printf` with format strings, `#include` of real `.h` headers, full `#if`/`#ifdef`/`#endif` conditional compilation. Transpiles to either a .NET 10 file-based program (`--run`) or a buildable csproj+`.cs` pair (default, `--build`). Same `.c` sources also compile under `gcc -std=c99 / clang` with byte-identical output. The driving stress test for the YAML-declared preprocessor framework. |
+| `LALR.CC.Tests/` | xUnit v3 (Microsoft.Testing.Platform) | 345 tests covering the regex-AST builders, byte/codepoint DFAs, lexer/parser pipeline, diagnostics, schema layer, the source generator (incl. end-to-end "emit → compile → load → parse"), the preprocessor framework (directive dispatch, conditional compilation, header guards), and parser semantics regressions. |
 
 Shared MSBuild settings (`TargetFramework=net10.0`, `LangVersion=14`, deterministic
 build, etc.) live in `Directory.Build.props`. NuGet metadata, symbol packages,
@@ -319,6 +323,61 @@ alternation; express alternatives as multiple lexer rules).
 
 ---
 
+## Preprocessor framework
+
+Grammars that need a CPP-like pass between the lexer and the parser declare a
+`preprocessor:` block in YAML. The source generator emits an `IPreprocessor`
+interface (one method per directive) and a `WrapPreprocessor` helper that
+slots a `PreprocessorTokenStream` adapter into the pipeline:
+
+```
+BytesLexer ──▶ PreprocessorTokenStream ──▶ SyncLATokenIterator ──▶ Parser
+                  • directive dispatch
+                  • conditional engine (#if stack)
+                  • macro Rewrite hook
+```
+
+Two kinds of directives:
+
+1. **User directives** (`#include`, `#define`, `#undef` in `directives:`) —
+   the framework recognises the directive token, collects its same-line args,
+   and calls the user's `OnInclude(args)` / `OnDefine(args)` / etc. The
+   handler returns `IEnumerable<Item>` tokens to inject in place of the
+   directive line; an empty enumerable just drops the directive.
+2. **Built-in conditional directives** (`#if`/`#ifdef`/`#ifndef`/`#else`/`#endif`
+   in `conditionals:`) — the framework owns these. `PreprocessorTokenStream`
+   tracks an `#if`-stack with depth-aware false-branch suppression. The user
+   supplies `bool IsDefined(string name)` and the engine handles header
+   guards (`#ifndef FOO_H / #define FOO_H / ... / #endif`) automatically.
+
+Minimal YAML declaration:
+
+```yaml
+preprocessor:
+  directives:
+    '#include': onInclude
+    '#define':  onDefine
+    '#undef':   onUndef
+  conditionals:
+    if:     '#if'
+    ifdef:  '#ifdef'
+    ifndef: '#ifndef'
+    else:   '#else'
+    endif:  '#endif'
+```
+
+The `#include`, `#define` symbols must also be declared as terminals in
+`symbols:` and matched by lexer rules. Real macro expansion (substitute
+`MAX` for its body when seen in source) happens in the user's `Rewrite(Item)`
+hook — the framework just routes every non-directive token through it. See
+`examples/CMinus/` for an end-to-end consumer with recursive `#include`
+file resolution, identifier-style macros, and header guards.
+
+The runtime adapter lives at `LALR.CC/LexicalGrammar/PreprocessorTokenStream.cs`
+and is allocation-light / AOT-clean like the rest of the runtime.
+
+---
+
 ## Examples
 
 ### `Bootstrap` — self-describing BNF (stage 0)
@@ -382,6 +441,41 @@ id on `Item.State` instead of the goto-target parser state, mis-routing
 `Peek().State` lookups when one reduction sat below another reduction's
 children. See `CLAUDE.md` § "Examples are stress tests, not safe demos".
 
+### `examples/CMinus` — C99-subset compiler with preprocessor
+
+A "C-minus" subset: `int`/`char`/`float`/`double`/`void` + pointer types, full
+expression precedence (assignment, logical, comparison, arithmetic, unary,
+postfix), if/while/return, **forward declarations**, **varargs**, **`printf`
+with `%d`/`%f`/`%s` format strings**, and **`#include` of real `.h` headers
+with `#ifndef`/`#define`/`#endif` header guards**. The grammar is a strict
+subset of C99 — anything that parses in C-minus also compiles under `gcc -std=c99`
+(or clang), and the demo's `examples/CMinus/sources/{main.c, math.{h,c}}` is
+literally compiled by both backends in the verification step.
+
+Translation rules:
+
+| C-minus | Emitted C# |
+|---|---|
+| `int`/`float`/`double`/`void` | same primitive |
+| `char`, `char*` | `byte`, `byte*` (real byte arithmetic) |
+| `"hello"` | `L("hello\0"u8)` — `byte*` into RVA data, NUL-terminated |
+| `malloc(n)` / `free(p)` | `NativeMemory.Alloc/Free` wrappers |
+| `printf(fmt, ...)` | Fluent `PrintfBuilder` chain (typed `Arg` overloads — pointers don't fit in `params object[]`) |
+| `int main(int argc, char** argv)` | Heap-allocated UTF-8 `byte**` populated from `args` (argv[0] = program path, matching real C) |
+| Forward decls in headers | Empty emit (C# hoists methods) |
+
+Driver modes:
+
+```bash
+dotnet run --project examples/CMinus/Examples.CMinus.csproj                          # default: write Program.cs + Examples.CMinus.Generated.csproj to ./cminus-out
+dotnet run --project examples/CMinus/Examples.CMinus.csproj -- --build               # default + dotnet build -c Release
+dotnet run --project examples/CMinus/Examples.CMinus.csproj -- --run > prog.cs       # single .NET 10 file-based program (#:property AllowUnsafeBlocks=true header)
+dotnet run --project examples/CMinus/Examples.CMinus.csproj -- --help                # usage
+```
+
+The C-minus example is also the driving stress test for the YAML-declared
+**preprocessor framework** — see the next section.
+
 ### Terminal-rasterised LaTeX — moved to `sharpastro/Console.Lib`
 
 The box-layout / sixel / sextant / half-block renderer for the same
@@ -402,7 +496,7 @@ library it primarily exercises.
 # Build the whole solution
 dotnet build LALR.CC.sln -c Debug          # or -c Release
 
-# Run all tests (xUnit v3 on Microsoft.Testing.Platform — 330 tests)
+# Run all tests (xUnit v3 on Microsoft.Testing.Platform — 345 tests)
 dotnet test LALR.CC.Tests/LALR.CC.Tests.csproj -c Debug
 
 # Run a subset of tests (MTP --filter-method, glob-syntax)
@@ -415,6 +509,7 @@ dotnet run --project TestProject/TestProject.csproj                -c Release   
 dotnet run --project examples/Calculator/Examples.Calculator.csproj -c Release  # minimal YAML demo
 dotnet run --project examples/Json/Examples.Json.csproj            -c Release    # real JSON via visitor
 dotnet run --project examples/Latex/Examples.Latex.csproj          -c Release    # Wikipedia-style math → Unicode
+dotnet run --project examples/CMinus/Examples.CMinus.csproj         -c Release    # C99-subset → unsafe C# (try `-- --build` or `-- --run`)
 dotnet run --project Tui/LALR.CC.Tui.csproj        -c Release    # interactive grammar debugger (lalr-tui)
 
 # Native AOT publish (verifies library + AOT-flagged consumers stay AOT-clean)

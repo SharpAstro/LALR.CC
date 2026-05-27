@@ -58,6 +58,25 @@ public sealed class GrammarSchema
     /// bytes instead.
     /// </summary>
     public ColumnMode? Columns { get; set; }
+
+    /// <summary>
+    /// Optional preprocessor declaration. When present, the source generator
+    /// emits an <c>IPreprocessor</c> interface (one method per declared
+    /// directive) and a <c>WrapPreprocessor</c> helper that wires the user's
+    /// implementation into a <see cref="PipeBytesLexer"/>-fed token stream
+    /// before parsing. The runtime <see cref="SchemaCompiler"/> doesn't act on
+    /// this block — it exists purely to drive codegen and validation.
+    /// </summary>
+    /// <remarks>
+    /// The preprocessor sits between the lexer and the parser as an
+    /// <c>ISyncIterator&lt;Item&gt;</c> adapter (or async mirror): each token
+    /// whose symbol id is a declared directive is consumed, its same-line
+    /// args are buffered, and the user handler returns a list of tokens to
+    /// inject in place of the directive line. Non-directive tokens optionally
+    /// pass through a <c>Rewrite</c> hook for macro expansion. Nothing about
+    /// the grammar changes — the parser sees only the cooked token stream.
+    /// </remarks>
+    public PreprocessorSchema Preprocessor { get; set; }
 }
 
 public sealed class ProductionGroupSchema
@@ -111,4 +130,53 @@ public sealed class ActionsSchema
 {
     /// <summary>Class name the source generator (Phase 2) will use for the actions partial class.</summary>
     public string ClassName { get; set; }
+}
+
+/// <summary>
+/// Declarative preprocessor configuration. Each entry in <see cref="Directives"/>
+/// maps a lexer-emitted directive token symbol (the *key* — must appear in
+/// <see cref="GrammarSchema.Symbols"/>) to a handler method name (the *value*)
+/// that the source generator turns into an <c>IPreprocessor</c> interface
+/// method. Implementations of that interface receive the directive's same-line
+/// args as <c>IReadOnlyList&lt;Item&gt;</c> and return the tokens to inject
+/// in place of the directive.
+/// </summary>
+/// <remarks>
+/// The directive token must be a single token emitted by the lexer (e.g. a
+/// rule like <c>{ symbol: '#include', match: '\#include' }</c>); the
+/// preprocessor adapter dispatches on token id, not on parsing of the
+/// directive's textual form. Use single-token rules for each directive name
+/// you want to recognize.
+/// </remarks>
+public sealed class PreprocessorSchema
+{
+    /// <summary>
+    /// Directive token symbol → handler method name. The key is the symbol
+    /// the lexer emits when the directive is matched (e.g. <c>"#include"</c>).
+    /// The value is the C# method name on the generated <c>IPreprocessor</c>
+    /// interface (e.g. <c>"onInclude"</c> → emitted as <c>OnInclude</c>);
+    /// names follow the same camelCase → PascalCase convention as production
+    /// actions.
+    /// </summary>
+    public Dictionary<string, string> Directives { get; set; } = new();
+
+    /// <summary>
+    /// Optional conditional-compilation directive map. Keys are the canonical
+    /// role names (<c>if</c>, <c>ifdef</c>, <c>ifndef</c>, <c>else</c>,
+    /// <c>endif</c>); values are the lexer-emitted directive token symbols
+    /// they bind to (e.g. <c>"#if"</c>, <c>"#ifdef"</c>). When present, the
+    /// runtime <c>PreprocessorTokenStream</c> tracks an <c>#if</c>/<c>#endif</c>
+    /// stack itself — false branches drop subsequent tokens, nested
+    /// conditionals respect depth, <c>#else</c> flips the current branch.
+    /// The generated <c>IPreprocessor</c> interface grows a <c>IsDefined</c>
+    /// method the engine calls to evaluate <c>#ifdef</c>/<c>#ifndef</c>.
+    /// </summary>
+    /// <remarks>
+    /// Unset roles disable just that operator — e.g. a grammar can declare
+    /// <c>ifdef</c>/<c>ifndef</c>/<c>endif</c> without <c>if</c> if it doesn't
+    /// want expression-based conditionals. The runtime treats missing roles
+    /// as "not a conditional directive" — they fall through to user-handler
+    /// dispatch (or pass through unchanged).
+    /// </remarks>
+    public Dictionary<string, string> Conditionals { get; set; } = new();
 }

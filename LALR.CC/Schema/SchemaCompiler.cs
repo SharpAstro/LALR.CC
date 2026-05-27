@@ -31,8 +31,82 @@ public static class SchemaCompiler
         var symbolIds = BuildSymbolMap(schema);
         var grammar = BuildGrammar(schema, symbolIds, actions);
         var lexer = BuildLexer(schema, symbolIds);
+        ValidatePreprocessor(schema, symbolIds);
         return (grammar, lexer);
     }
+
+    /// <summary>
+    /// Validate the optional <see cref="GrammarSchema.Preprocessor"/> block —
+    /// declared directive token symbols must exist in <see cref="GrammarSchema.Symbols"/>,
+    /// handler names must be non-empty. Doesn't build any runtime artefact:
+    /// the preprocessor is wired by generated code (<c>BuildPreprocessor</c>),
+    /// not by <see cref="SchemaCompiler"/>; this method just surfaces config
+    /// errors at compile/runtime boundary the same way the rest of the
+    /// schema is checked.
+    /// </summary>
+    private static void ValidatePreprocessor(GrammarSchema schema, Dictionary<string, int> symbolIds)
+    {
+        var pre = schema.Preprocessor;
+        if (pre is null)
+        {
+            return;
+        }
+        if (pre.Directives != null)
+        {
+            foreach (var kv in pre.Directives)
+            {
+                var symbol = kv.Key;
+                var handler = kv.Value;
+                if (string.IsNullOrEmpty(symbol))
+                {
+                    throw new SchemaCompilationException("preprocessor.directives: directive symbol is null or empty");
+                }
+                if (!symbolIds.ContainsKey(symbol))
+                {
+                    throw new SchemaCompilationException(
+                        $"preprocessor.directives['{symbol}']: symbol is not in symbols[]");
+                }
+                if (string.IsNullOrEmpty(handler))
+                {
+                    throw new SchemaCompilationException(
+                        $"preprocessor.directives['{symbol}']: handler name is null or empty");
+                }
+            }
+        }
+        if (pre.Conditionals != null)
+        {
+            foreach (var kv in pre.Conditionals)
+            {
+                var role = kv.Key;
+                var symbol = kv.Value;
+                if (string.IsNullOrEmpty(role))
+                {
+                    throw new SchemaCompilationException("preprocessor.conditionals: role name is null or empty");
+                }
+                if (!IsKnownConditionalRole(role))
+                {
+                    throw new SchemaCompilationException(
+                        $"preprocessor.conditionals['{role}']: unknown role; expected one of if, ifdef, ifndef, else, endif");
+                }
+                if (string.IsNullOrEmpty(symbol))
+                {
+                    throw new SchemaCompilationException(
+                        $"preprocessor.conditionals['{role}']: symbol is null or empty");
+                }
+                if (!symbolIds.ContainsKey(symbol))
+                {
+                    throw new SchemaCompilationException(
+                        $"preprocessor.conditionals['{role}']: symbol '{symbol}' is not in symbols[]");
+                }
+            }
+        }
+    }
+
+    private static bool IsKnownConditionalRole(string role) => role switch
+    {
+        "if" or "ifdef" or "ifndef" or "else" or "endif" => true,
+        _ => false,
+    };
 
     private static void ValidateSymbols(GrammarSchema schema)
     {

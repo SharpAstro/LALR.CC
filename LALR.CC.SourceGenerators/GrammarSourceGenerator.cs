@@ -240,6 +240,23 @@ public sealed class GrammarSourceGenerator : IIncrementalGenerator
             context.AddSource(className + ".Visitor.g.cs", SourceText.From(visitorSource, Encoding.UTF8));
         }
 
+        // Preprocessor surface: emit IPreprocessor + BuildPreprocessor +
+        // WrapPreprocessor when the YAML declares a preprocessor: block.
+        // Skipped silently when absent (the default) — no consumer code
+        // depends on the file existing, only consumers that explicitly
+        // implement IPreprocessor reference it. Suppressed on LALR0003
+        // because a malformed schema can leave directive symbol ids
+        // unresolved; PreprocessorEmitter already skips unresolved entries
+        // but emitting half a file is worse than emitting none.
+        if (validationErrors.Count == 0)
+        {
+            var preprocessorSource = PreprocessorEmitter.Emit(schema, rootNamespace, className);
+            if (preprocessorSource != null)
+            {
+                context.AddSource(className + ".Preprocessor.g.cs", SourceText.From(preprocessorSource, Encoding.UTF8));
+            }
+        }
+
         // Phase 5 / slice 6: pre-bake the lexer table. Only attempt when LALR0003
         // structural validation already passed — otherwise schema-level breakage
         // (unknown symbol references in lexer rules, missing root state) would

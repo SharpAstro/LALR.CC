@@ -1,0 +1,383 @@
+# C-minus — a tiny C-like language compiled to unsafe AOT-clean C#. This
+# example is the framework test-bed for the YAML-declared preprocessor block
+# (`preprocessor:` at the bottom of this file): the source generator emits an
+# `IPreprocessor` interface with one method per declared directive, and the
+# C-minus visitor wires that into the BytesLexer → WrapPreprocessor → parser
+# pipeline so `#include` and `#define` work end-to-end before parsing even
+# starts.
+#
+# What's in the language:
+#   - Functions: `int foo(int* p, int n) { ... }`
+#   - Local decls with optional init: `int x;` or `int x = 5;`
+#   - Pointer types of arbitrary depth: `int*`, `int**`
+#   - Statements: if/else, while, return, expression-stmt, block
+#   - Expressions with full C-style precedence including assignment-as-expr,
+#     unary `*` / `&` / `-`, calls with arg lists
+#   - Line comments `// ...`
+#   - Preprocessor: `#include "file.cmm"` and `#define NAME body`
+#
+# What's deliberately OUT:
+#   - typedefs (avoid the classic "lexer hack")
+#   - structs, unions, arrays (just pointers + heap)
+#   - string literals (only `"..."` is the directive arg for `#include`)
+#   - global variables (only function definitions at top level)
+#   - varargs, function-like macros, `#if`/`#ifdef`/conditional compilation
+#   - `setjmp`/`longjmp`, switch/case, for-loops, bitwise ops
+#
+# Precedence ladder (lowest → highest):
+#   E       : assignment (right-associative)
+#   LOr     : ||
+#   LAnd    : &&
+#   Equ     : == !=
+#   Rel     : < > <= >=
+#   Add     : + -
+#   Mul     : * /
+#   Unary   : unary * & -                       (right-associative)
+#   Postfix : function call                     (left-associative)
+#   Primary : ID, NUM, ( E )
+#
+# Dangling-else: the two `if` rules share a `derivation: rightmost` group so on
+# lookahead `else` at state `[if ( E ) Stmt]` the parser shifts (else binds to
+# the nearest if). Same trick the LaTeX example uses for unary minus.
+
+symbols:
+  - TU           # 0  translation unit (start) — distinct from FnList so the
+                 #    parser doesn't terminate on the first reduced function
+  - FnList       # 1
+  - Fn           # 2
+  - ParamList    # 3
+  - Param        # 4
+  - Type         # 5
+  - Block        # 6
+  - StmtList     # 7
+  - Stmt         # 8
+  - Decl         # 9
+  - E            # 10  expression (incl. assignment)
+  - LOr          # 11
+  - LAnd         # 12
+  - Equ          # 13  == !=
+  - Rel          # 14  < > <= >=
+  - Add          # 15  + -
+  - Mul          # 16  * /
+  - Unary        # 17
+  - Postfix      # 18
+  - Primary      # 19
+  - ArgList      # 20
+  - 'int'        # 21  keyword
+  - 'if'         # 22
+  - 'else'       # 23
+  - 'while'      # 24
+  - 'return'     # 25
+  - '('          # 26
+  - ')'          # 27
+  - '{'          # 28
+  - '}'          # 29
+  - ';'          # 30
+  - ','          # 31
+  - '='          # 32
+  - '||'         # 33
+  - '&&'         # 34
+  - '=='         # 35
+  - '!='         # 36
+  - '<'          # 37
+  - '>'          # 38
+  - '<='         # 39
+  - '>='         # 40
+  - '+'          # 41
+  - '-'          # 42
+  - '*'          # 43
+  - '/'          # 44
+  - '&'          # 45
+  - ID           # 46
+  - NUM          # 47
+  - STRING       # 48  string literal — usable in expressions and as #include arg
+  - WS           # 49  whitespace (ignored)
+  - LINE_COMMENT # 50  // to end of line (ignored)
+  - '#include'   # 51  preprocessor directive — consumed before parsing
+  - '#define'    # 52  preprocessor directive — consumed before parsing
+  - '#undef'     # 53  preprocessor directive — removes a macro definition
+  - '#if'        # 54  preprocessor conditional — only literal `0`/`1` supported in v1
+  - '#ifdef'     # 55  preprocessor conditional — branch if macro defined
+  - '#ifndef'    # 56  preprocessor conditional — branch if macro NOT defined (header guards)
+  - '#else'      # 57  preprocessor conditional — flips the current branch
+  - '#endif'     # 58  preprocessor conditional — pops the conditional stack
+  - 'char'       # 59  primitive type — pointer arithmetic walks bytes
+  - 'float'      # 60  primitive type — IEEE-754 32-bit
+  - 'double'     # 61  primitive type — IEEE-754 64-bit (printf '%f' default)
+  - 'void'       # 62  primitive type — only valid as function return
+  - '...'        # 63  varargs marker — only in function param lists
+  - FLOAT        # 64  float literal (mandatory decimal point — `1.5`, `3.14e10`)
+  - BLOCK_COMMENT # 65 /* ... */ (ignored)
+
+productions:
+  # Start production. Single-non-terminal — trimmed at parse time so the root
+  # Item carries FnList's already-built C# source string.
+  - derivation: none
+    rules:
+      - { lhs: TU, rhs: [FnList] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: FnList, rhs: [Fn, FnList], action: fnsCons }
+      - { lhs: FnList, rhs: [Fn],          action: fnsOne }
+
+  - derivation: none
+    rules:
+      - { lhs: Fn, rhs: [Type, ID, '(', ParamList, ')', Block], action: funcDef }
+      - { lhs: Fn, rhs: [Type, ID, '(', ')', Block],             action: funcDefNoArgs }
+      # Forward declarations: prototype ends with `;` instead of `{ block }`.
+      # No S/R with the definition rules — lookahead `;` vs `{` disambiguates
+      # after parsing the param list.
+      - { lhs: Fn, rhs: [Type, ID, '(', ParamList, ')', ';'], action: protoDef }
+      - { lhs: Fn, rhs: [Type, ID, '(', ')', ';'],             action: protoDefNoArgs }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: ParamList, rhs: [Param, ',', ParamList], action: paramsCons }
+      - { lhs: ParamList, rhs: [Param],                  action: paramsOne }
+      # Varargs marker — only legal at the end of the param list, since
+      # `...` can't start another `Param ',' ...` chain. The grammar lets
+      # `paramsVararg` appear only as the tail because `...` is not a Param.
+      - { lhs: ParamList, rhs: [Param, ',', '...'],     action: paramsVararg }
+
+  - derivation: none
+    rules:
+      - { lhs: Param, rhs: [Type, ID], action: param }
+
+  # Type extends rightward into pointer levels: `int * *` → `int**`. Base
+  # types are int/char/float/double/void; pointers compose on top of any.
+  # `void` is only meaningful as a function return type; the grammar doesn't
+  # enforce that — let the consumer C compiler catch invalid uses.
+  - derivation: leftmost
+    rules:
+      - { lhs: Type, rhs: [Type, '*'],   action: typePtr }
+      - { lhs: Type, rhs: ['int'],       action: typeInt }
+      - { lhs: Type, rhs: ['char'],      action: typeChar }
+      - { lhs: Type, rhs: ['float'],     action: typeFloat }
+      - { lhs: Type, rhs: ['double'],    action: typeDouble }
+      - { lhs: Type, rhs: ['void'],      action: typeVoid }
+
+  - derivation: none
+    rules:
+      - { lhs: Block, rhs: ['{', StmtList, '}'], action: block }
+      - { lhs: Block, rhs: ['{', '}'],            action: blockEmpty }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: StmtList, rhs: [Stmt, StmtList], action: stmtsCons }
+      - { lhs: StmtList, rhs: [Stmt],            action: stmtsOne }
+
+  # Dangling-else: rightmost so on lookahead `else` at state `[if ( E ) Stmt]`
+  # the parser shifts (binds the else to the nearest if). The two if rules
+  # have to share a group for the precedence resolution to apply.
+  - derivation: rightmost
+    rules:
+      - { lhs: Stmt, rhs: ['if', '(', E, ')', Stmt],             action: stmtIf }
+      - { lhs: Stmt, rhs: ['if', '(', E, ')', Stmt, 'else', Stmt], action: stmtIfElse }
+
+  # All other Stmt rules. Disjoint first sets — no S/R within this group.
+  - derivation: none
+    rules:
+      - { lhs: Stmt, rhs: ['while', '(', E, ')', Stmt], action: stmtWhile }
+      - { lhs: Stmt, rhs: ['return', E, ';'],            action: stmtReturn }
+      - { lhs: Stmt, rhs: ['return', ';'],                action: stmtReturnVoid }
+      - { lhs: Stmt, rhs: [Decl, ';'],                    action: stmtDecl }
+      - { lhs: Stmt, rhs: [E, ';'],                        action: stmtExpr }
+      - { lhs: Stmt, rhs: [Block] }
+
+  - derivation: none
+    rules:
+      - { lhs: Decl, rhs: [Type, ID, '=', E], action: declInit }
+      - { lhs: Decl, rhs: [Type, ID],          action: decl }
+
+  # Assignment is right-associative — both E rules share the rightmost group so
+  # on lookahead `=` at state `[..LOr]` the parser shifts.
+  - derivation: rightmost
+    rules:
+      - { lhs: E, rhs: [LOr, '=', E], action: assign }
+      - { lhs: E, rhs: [LOr] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: LOr, rhs: [LOr, '||', LAnd], action: lor }
+      - { lhs: LOr, rhs: [LAnd] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: LAnd, rhs: [LAnd, '&&', Equ], action: land }
+      - { lhs: LAnd, rhs: [Equ] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Equ, rhs: [Equ, '==', Rel], action: eq }
+      - { lhs: Equ, rhs: [Equ, '!=', Rel], action: neq }
+      - { lhs: Equ, rhs: [Rel] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Rel, rhs: [Rel, '<',  Add], action: lt }
+      - { lhs: Rel, rhs: [Rel, '>',  Add], action: gt }
+      - { lhs: Rel, rhs: [Rel, '<=', Add], action: le }
+      - { lhs: Rel, rhs: [Rel, '>=', Add], action: ge }
+      - { lhs: Rel, rhs: [Add] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Add, rhs: [Add, '+', Mul], action: add }
+      - { lhs: Add, rhs: [Add, '-', Mul], action: sub }
+      - { lhs: Add, rhs: [Mul] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Mul, rhs: [Mul, '*', Unary], action: mul }
+      - { lhs: Mul, rhs: [Mul, '/', Unary], action: div }
+      - { lhs: Mul, rhs: [Unary] }
+
+  # Unary operators are right-associative: `--x` is `-(-x)`, `**p` is `*(*p)`.
+  # Cast `(Type) Unary` lives here too so its precedence matches real C
+  # (binds tighter than mul/div, looser than postfix calls). Disambiguates
+  # from `Primary -> '(' E ')'` by lookahead: after `(`, a Type-starting
+  # keyword (int/char/float/double/void) → cast; anything else → paren-expr.
+  - derivation: rightmost
+    rules:
+      - { lhs: Unary, rhs: ['*', Unary], action: deref }
+      - { lhs: Unary, rhs: ['&', Unary], action: addrOf }
+      - { lhs: Unary, rhs: ['-', Unary], action: neg }
+      - { lhs: Unary, rhs: ['(', Type, ')', Unary], action: cast }
+      - { lhs: Unary, rhs: [Postfix] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Postfix, rhs: [Postfix, '(', ArgList, ')'], action: call }
+      - { lhs: Postfix, rhs: [Postfix, '(', ')'],            action: callNoArgs }
+      - { lhs: Postfix, rhs: [Primary] }
+
+  - derivation: none
+    rules:
+      - { lhs: Primary, rhs: [ID],          action: var }
+      - { lhs: Primary, rhs: [NUM],         action: num }
+      - { lhs: Primary, rhs: [FLOAT],       action: flt }
+      - { lhs: Primary, rhs: [STRING],      action: str }
+      - { lhs: Primary, rhs: ['(', E, ')'], action: paren }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: ArgList, rhs: [E, ',', ArgList], action: argsCons }
+      - { lhs: ArgList, rhs: [E],                action: argsOne }
+
+lexer:
+  root:
+    # Preprocessor directives — single-token matches. Longest-match in the byte
+    # DFA picks `#include` over any prefix; first-rule-wins handles ties.
+    # Order matters here too: `#ifndef` and `#ifdef` need to precede `#if`
+    # since they share the prefix and on identical-length ambiguity the
+    # earlier rule wins (and longest-match picks the longer string anyway).
+    - { symbol: '#ifndef',  match: '#ifndef' }
+    - { symbol: '#ifdef',   match: '#ifdef' }
+    - { symbol: '#if',      match: '#if' }
+    - { symbol: '#else',    match: '#else' }
+    - { symbol: '#endif',   match: '#endif' }
+    - { symbol: '#include', match: '#include' }
+    - { symbol: '#define',  match: '#define' }
+    - { symbol: '#undef',   match: '#undef' }
+
+    # Block comments — must precede the `/` operator rule so the slash isn't
+    # eaten first. The regex avoids alternation (IRx has no `|`):
+    #   /\*  [^*]*  ( \* [^/] [^*]* )*  \*+ /
+    # = `/*` then non-stars then (single `*` not followed by `/` then more
+    # non-stars)* then one-or-more `*` then `/`. Classic C-comment regex
+    # rendered without alternation; handles `/**/`, `/* x */`, `/** comment **/`.
+    - { symbol: BLOCK_COMMENT, match: '/\*[^*]*(\*[^/][^*]*)*\*+/', action: ignore }
+
+    # Line comments. Ignored.
+    - { symbol: LINE_COMMENT, match: '//[^\n]*', action: ignore }
+
+    # Keywords first — first-rule-wins on ties with identifier (e.g. `int` is 3
+    # chars matching both `int` keyword and `[a-zA-Z_]...` identifier; keyword
+    # wins because it sits earlier).
+    - { symbol: 'int',    match: 'int' }
+    - { symbol: 'char',   match: 'char' }
+    - { symbol: 'float',  match: 'float' }
+    - { symbol: 'double', match: 'double' }
+    - { symbol: 'void',   match: 'void' }
+    - { symbol: 'if',     match: 'if' }
+    - { symbol: 'else',   match: 'else' }
+    - { symbol: 'while',  match: 'while' }
+    - { symbol: 'return', match: 'return' }
+
+    # Multi-char operators. Longest-match handles `==` vs `=`, `<=` vs `<`, etc.
+    # so the ordering doesn't strictly matter — listed multi-char first for
+    # readability.
+    - { symbol: '==', match: '==' }
+    - { symbol: '!=', match: '!=' }
+    - { symbol: '<=', match: '<=' }
+    - { symbol: '>=', match: '>=' }
+    - { symbol: '&&', match: '&&' }
+    - { symbol: '||', match: '\|\|' }
+
+    # Single-char operators and punctuation.
+    - { symbol: '=', match: '=' }
+    - { symbol: '<', match: '<' }
+    - { symbol: '>', match: '>' }
+    - { symbol: '+', match: '\+' }
+    - { symbol: '-', match: '\-' }
+    - { symbol: '*', match: '\*' }
+    - { symbol: '/', match: '/' }
+    - { symbol: '&', match: '&' }
+    - { symbol: '(', match: '\(' }
+    - { symbol: ')', match: '\)' }
+    - { symbol: '{', match: '\{' }
+    - { symbol: '}', match: '\}' }
+    - { symbol: ';', match: ';' }
+    - { symbol: ',', match: ',' }
+
+    # Varargs marker `...` (three literal dots). Must precede any rule that
+    # would partially match `.` — currently no such rule, but keeping it
+    # high in the table guards against future single-dot operators (member
+    # access etc.) that real C has but C-minus doesn't.
+    - { symbol: '...', match: '\.\.\.' }
+
+    # Literals. FLOAT BEFORE NUM so longest-match picks float for `123.5`
+    # (NUM would match just `123` otherwise). FLOAT requires a mandatory
+    # decimal point to disambiguate cleanly from NUM — `123` is INT, `123.0`
+    # is FLOAT. Suffixed form `123.5f` / `123.5F` first (longest match);
+    # un-suffixed second. Both passthrough to C# numeric literal syntax,
+    # which accepts `f`/`F`. (Real C also accepts `L` for long double; we
+    # skip that since C# has no `L` suffix on floats.)
+    # STRING used both by #include args and as in-expression literals via
+    # the `Primary -> STRING` production.
+    - { symbol: STRING, match: '"[^"]*"' }
+    - { symbol: FLOAT,  match: '[0-9]+\.[0-9]+([eE][+\-]?[0-9]+)?[fF]' }
+    - { symbol: FLOAT,  match: '[0-9]+\.[0-9]+([eE][+\-]?[0-9]+)?' }
+    - { symbol: NUM,    match: '[0-9]+' }
+    - { symbol: ID,     match: '[a-zA-Z_][a-zA-Z_0-9]*' }
+
+    # Whitespace + newlines: ignored. The preprocessor uses SourcePosition.Line
+    # to detect directive line boundaries — which the byte-DFA lexer populates
+    # whether or not WS is ignored, so this works.
+    - { symbol: WS, match: '[ \t\r\n]+', action: ignore }
+
+# Preprocessor declaration. The source generator turns this block into:
+#   public interface IPreprocessor {
+#       IEnumerable<Item> OnInclude(IReadOnlyList<Item> args);
+#       IEnumerable<Item> OnDefine(IReadOnlyList<Item> args);
+#       IEnumerable<Item> OnUndef(IReadOnlyList<Item> args);
+#       IEnumerable<Item> Rewrite(Item token);
+#       bool IsDefined(string name);     // for #ifdef / #ifndef
+#   }
+# plus BuildPreprocessor() / WrapPreprocessor() helpers. The `conditionals:`
+# block tells the framework which directives belong to the built-in
+# conditional-compilation engine (the user doesn't implement those — the
+# runtime tracks the #if/#endif stack and suppresses tokens in false branches
+# automatically, consulting `IsDefined` for #ifdef/#ifndef).
+preprocessor:
+  directives:
+    '#include': onInclude
+    '#define':  onDefine
+    '#undef':   onUndef
+  conditionals:
+    if:     '#if'
+    ifdef:  '#ifdef'
+    ifndef: '#ifndef'
+    else:   '#else'
+    endif:  '#endif'

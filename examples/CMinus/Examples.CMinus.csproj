@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    C-minus demo: a tiny C-like language compiled to unsafe AOT-clean C#.
+    Exercises the YAML-declared preprocessor pipeline (`#include`, `#define`)
+    in addition to the usual schema → AST → visitor surface every other
+    example uses. Same csproj shape as Calculator/Json — in-tree
+    ProjectReference to the runtime + source generator; a NuGet consumer
+    outside this repo would swap to a single `PackageReference` on
+    `SharpAstro.LALR.CC` and drop the explicit generator hookup.
+
+    AOT publish stays off here because the example only emits C# source code
+    (it doesn't compile the emitted C# at runtime), so the emitter doesn't
+    hit any AOT-sensitive surface; flipping <PublishAot>true</PublishAot> on
+    is fine if someone wants to verify the emitted-pipeline path stays
+    trim-clean.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Examples.CMinus</RootNamespace>
+    <AssemblyName>Examples.CMinus</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\LALR.CC\LALR.CC.csproj" />
+    <ProjectReference Include="..\..\LALR.CC.SourceGenerators\LALR.CC.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="YamlDotNet" Version="17.1.0" GeneratePathProperty="true" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Analyzer Include="$(PkgYamlDotNet)\lib\netstandard2.0\YamlDotNet.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- cminus.lalr.yaml → partial class Cminus in Examples.CMinus.
+         Generator emits schema, AST records, IVisitor, IPreprocessor + the
+         BuildParser/BuildLexer/BuildPreprocessor/WrapPreprocessor helpers. -->
+    <AdditionalFiles Include="cminus.lalr.yaml" />
+  </ItemGroup>
+
+  <!-- C-minus demo sources. Each `.c` becomes a compilation unit; `.h` files
+       are pulled in via `#include`. Copied to the output directory so the
+       runtime can resolve them via AppContext.BaseDirectory at any
+       cwd. The same `.c` files are also valid C99 — `gcc -std=c99
+       sources/main.c sources/math.c` produces an equivalent native binary. -->
+  <ItemGroup>
+    <None Include="sources\**\*.c" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="sources\**\*.h" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Scratch files the user redirects emitter output into for hand-testing
+       (e.g. `dotnet run > test.cs && dotnet run test.cs`). These are .NET 10
+       file-based programs and contain `#:` directives that csc rejects in a
+       csproj-driven build. Exclude by name so they don't break compilation
+       when present, but they're still allowed to exist on disk. -->
+  <ItemGroup>
+    <Compile Remove="test.cs" />
+    <Compile Remove="emitted.cs" />
+    <Compile Remove="scratch*.cs" />
+  </ItemGroup>
+
+</Project>

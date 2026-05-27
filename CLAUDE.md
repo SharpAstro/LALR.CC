@@ -14,7 +14,7 @@ The repo was modernized to **.NET 10 / C# 14 / AOT** in 2026; older articles des
 # Build the whole solution (runtime + generator + Bootstrap{,.Stage1} + TestProject + Tui + every example)
 dotnet build LALR.CC.sln -c Debug          # or -c Release
 
-# Run all unit tests (xUnit v3 on Microsoft.Testing.Platform — 330 cases)
+# Run all unit tests (xUnit v3 on Microsoft.Testing.Platform — 345 cases)
 dotnet test LALR.CC.Tests/LALR.CC.Tests.csproj -c Debug
 
 # Run the test project directly (also via MTP — equivalent, faster startup)
@@ -30,6 +30,7 @@ dotnet run --project TestProject/TestProject.csproj                 --no-build -
 dotnet run --project examples/Calculator/Examples.Calculator.csproj --no-build -c Debug   # minimal YAML demo
 dotnet run --project examples/Json/Examples.Json.csproj             --no-build -c Debug   # real JSON via visitor
 dotnet run --project examples/Latex/Examples.Latex.csproj           --no-build -c Debug   # math → Unicode plain text
+dotnet run --project examples/CMinus/Examples.CMinus.csproj         --no-build -c Debug   # C99 → unsafe C# (--run | --build | --help)
 dotnet run --project Tui/LALR.CC.Tui.csproj         --no-build -c Debug    # interactive grammar debugger (lalr-tui)
 
 # AOT publish (verifies library + every AOT-flagged consumer stay AOT-clean)
@@ -56,7 +57,8 @@ The demo binaries print step-by-step parse traces in Debug; in Release the `[Con
 | `examples/Json/` | Exe | Real JSON parser via the YAML pipeline. ~50-line `IVisitor` builds `Dictionary<string, object>` / `List<object>` / primitives. |
 | `examples/Latex.Grammar/` | Library | Shared LaTeX-math grammar: runs the source generator once on `latex.lalr.yaml` and exposes the resulting `Latex` partial class (Schema, AST records, `IVisitor<T>`). Both LaTeX consumers `ProjectReference` this library — one grammar, multiple visitors. |
 | `examples/Latex/` | Exe (`PublishAot=true`) | Wikipedia-style LaTeX math via the shared `Latex.Grammar` library. Visitor renders to Unicode plain text. (Box-layout / sixel renderer for the same grammar lives in the sibling `sharpastro/Console.Lib` repo under `examples/LatexConsole/`.) |
-| `LALR.CC.Tests/` | xUnit v3 (Microsoft.Testing.Platform runner; `OutputType=Exe`) | 330 tests covering regex-AST builders, byte/codepoint DFAs, lexer/parser pipeline, diagnostics, schema layer, source generator (incl. end-to-end "emit → compile → load → parse"), and parser-semantics regressions. |
+| `examples/CMinus/` | Exe | C99-subset compiler: multi-file `.c`/`.h` sources transpiled to unsafe AOT-clean C#. Exercises the YAML-declared **preprocessor framework** (`#include`, `#define`/`#undef`, full `#if`/`#ifdef`/`#ifndef`/`#else`/`#endif` conditional compilation). Demonstrates strings (`char*` as `byte*`), float+double, varargs `printf` via a fluent `PrintfBuilder`, cast expressions, forward declarations from real `.h` headers with `#ifndef` guards, and `char** argv` UTF-8 encoding. Same sources compile under `clang -std=c99` for byte-identical output. Three driver modes: default (emit csproj+`.cs`), `--build` (emit + dotnet build), `--run` (single .NET 10 file-based program). |
+| `LALR.CC.Tests/` | xUnit v3 (Microsoft.Testing.Platform runner; `OutputType=Exe`) | 345 tests covering regex-AST builders, byte/codepoint DFAs, lexer/parser pipeline, diagnostics, schema layer, source generator (incl. end-to-end "emit → compile → load → parse"), the preprocessor framework (directive dispatch, conditional compilation, header guards), and parser-semantics regressions. |
 
 Shared MSBuild settings (`TargetFramework=net10.0`, `LangVersion=14`, deterministic build, etc.) live in `Directory.Build.props`. Don't put them in individual csprojs. NuGet metadata, symbol packages, SourceLink, and the bundled-analyzer pack target live on `LALR.CC.csproj` (the only `IsPackable=true` project).
 
@@ -69,6 +71,8 @@ The pipeline has three stages plus the parser. Each implements/consumes `IAsyncI
 3. **Parser** — `Parser.cs` + `ParserTableBuilder.cs`. The parser table is built by `ParserTableBuilder` (pure C#, no `LexicalGrammar` dependency — Phase 5 / slice 1 splits this out so the same algorithm can be linked into the netstandard2.0 source generator and run at compile time). The build pipeline: `PopulateProductions → InitSymbols → GenerateLR0Items → ComputeFirstSets → ConvertLR0ItemsToKernels → InitLALRTables → CalculateLookAheads → GenerateParseTable`. `Parser`'s constructor instantiates the builder and exposes its introspection state (FirstSets, LR0/LR1 items, kernels, gotos, propogations, Productions, Terminals/NonTerminals, Conflicts) via `IReadOnly*` passthrough properties. `Parser.ParseInputAsync` then drives the standard shift/reduce/accept/error loop, consulting `ParseTable.Actions[state, tokenId+1]`.
 
 `LexicalGrammar/PipeRuneIterator.cs` is still in the codebase as a standalone codepoint iterator (`IAsyncLAIterator<int>`) for callers that want UTF-8-decoded codepoints rather than tokens, but no part of the parse pipeline uses it anymore — it's an alternative input path, not a building block of `PipeBytesLexer`.
+
+**Optional preprocessor stage** — grammars that declare a `preprocessor:` block in YAML get a `PreprocessorTokenStream` (`LexicalGrammar/PreprocessorTokenStream.cs`) slotted between the lexer and the LA iterator. It's an `ISyncIterator<Item>` that (a) recognises directive tokens by symbol id, collects their same-line args via `SourcePosition.Line`, dispatches to user-supplied `OnX(IReadOnlyList<Item> args)` handlers that return tokens to inject in place of the directive line; (b) optionally routes non-directive tokens through a user-supplied `Rewrite(Item)` hook for macro expansion; (c) handles built-in conditional directives (`#if`/`#ifdef`/`#ifndef`/`#else`/`#endif`) with a depth-tracked `_branchStack`+`_falseDepth` engine — false branches suppress all tokens and user handlers while still tracking depth so nested conditionals match correctly. The conditional engine is wired by a `PreprocessorConditionals` struct that the source generator emits from the YAML's `conditionals:` block. Schema POCOs in `LALR.CC/Schema/GrammarSchema.cs` (`PreprocessorSchema.Directives` + `Conditionals`); generator emit in `LALR.CC.SourceGenerators/PreprocessorEmitter.cs` (produces `IPreprocessor` interface + `BuildPreprocessor` dispatch + `WrapPreprocessor` factory + the `IsDefined` interface method when conditionals are declared). `examples/CMinus/` is the end-to-end consumer.
 
 Grammars are described by:
 - `SymbolName[]` — terminal and non-terminal names; index = symbol ID (the LHS=0 symbol is the start symbol).

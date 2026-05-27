@@ -55,9 +55,82 @@ internal static class SchemaValidator
         var stateSet = ValidateLexerStructure(schema, errors);
         ValidateProductions(schema, symbolSet, errors);
         ValidateLexerRules(schema, symbolSet, stateSet, errors);
+        ValidatePreprocessor(schema, symbolSet, errors);
 
         return errors;
     }
+
+    /// <summary>
+    /// Mirror of <c>SchemaCompiler.ValidatePreprocessor</c>: every declared
+    /// directive symbol must exist in <see cref="GrammarSchema.Symbols"/>,
+    /// every handler name must be non-empty. Surfaced as LALR0003 diagnostics
+    /// by the generator so YAML config errors are caught at build time
+    /// instead of becoming runtime <c>SchemaCompilationException</c>s.
+    /// </summary>
+    private static void ValidatePreprocessor(GrammarSchema schema, HashSet<string> symbols, List<ValidationError> errors)
+    {
+        var pre = schema.Preprocessor;
+        if (pre == null)
+        {
+            return;
+        }
+        if (pre.Directives != null)
+        {
+            foreach (var kv in pre.Directives)
+            {
+                var symbol = kv.Key;
+                var handler = kv.Value;
+                var path = $"preprocessor.directives['{symbol}']";
+                if (string.IsNullOrEmpty(symbol))
+                {
+                    errors.Add(new ValidationError("preprocessor.directives", "directive symbol is null or empty"));
+                    continue;
+                }
+                if (!symbols.Contains(symbol))
+                {
+                    errors.Add(new ValidationError(path, $"symbol '{symbol}' is not in symbols[]"));
+                }
+                if (string.IsNullOrEmpty(handler))
+                {
+                    errors.Add(new ValidationError(path, "handler name is null or empty"));
+                }
+            }
+        }
+        if (pre.Conditionals != null)
+        {
+            foreach (var kv in pre.Conditionals)
+            {
+                var role = kv.Key;
+                var symbol = kv.Value;
+                var path = $"preprocessor.conditionals['{role}']";
+                if (string.IsNullOrEmpty(role))
+                {
+                    errors.Add(new ValidationError("preprocessor.conditionals", "role name is null or empty"));
+                    continue;
+                }
+                if (!IsKnownConditionalRole(role))
+                {
+                    errors.Add(new ValidationError(path,
+                        "unknown role; expected one of if, ifdef, ifndef, else, endif"));
+                    continue;
+                }
+                if (string.IsNullOrEmpty(symbol))
+                {
+                    errors.Add(new ValidationError(path, "symbol is null or empty"));
+                }
+                else if (!symbols.Contains(symbol))
+                {
+                    errors.Add(new ValidationError(path, $"symbol '{symbol}' is not in symbols[]"));
+                }
+            }
+        }
+    }
+
+    private static bool IsKnownConditionalRole(string role) => role switch
+    {
+        "if" or "ifdef" or "ifndef" or "else" or "endif" => true,
+        _ => false,
+    };
 
     private static HashSet<string> ValidateSymbols(GrammarSchema schema, List<ValidationError> errors)
     {
