@@ -20,6 +20,13 @@ namespace LALR.CC.LexicalGrammar;
 /// invocation, but also lets a directive be hand-built in code without
 /// breaking the adapter.
 /// <para>
+/// The iterator plumbing (ready queue, one-token look-ahead, exhaustion flag,
+/// <see cref="ISyncIterator{T}"/> surface) lives in the
+/// <see cref="RewritingTokenStream"/> base — this class focuses on the
+/// preprocessor-specific policy. See that class for the cross-cutting pattern
+/// shared with future rewriters (e.g. the C typedef "lexer hack").
+/// </para>
+/// <para>
 /// Re-entrancy: <see cref="PreprocessorTokenStream"/> instances are *not*
 /// thread-safe, but the directive handler may construct another
 /// <see cref="PreprocessorTokenStream"/> over a freshly-lexed inner source
@@ -27,29 +34,11 @@ namespace LALR.CC.LexicalGrammar;
 /// list — the outer adapter has no live cursor while the handler runs.
 /// </para>
 /// </remarks>
-public sealed class PreprocessorTokenStream : ISyncIterator<Item>
+public sealed class PreprocessorTokenStream : RewritingTokenStream
 {
-    private readonly ISyncIterator<Item> _inner;
     private readonly IReadOnlyDictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>> _directives;
     private readonly Func<Item, IEnumerable<Item>> _rewrite;
     private readonly PreprocessorConditionals _conditionals;
-
-    // Queue of tokens ready to emit: produced by directive handlers, by the
-    // rewrite hook, or by a buffered look-ahead that crossed a line boundary.
-    private readonly Queue<Item> _ready = new();
-
-    // The inner iterator's last MoveNext gave us a token that didn't belong to
-    // the current directive (different line) — we held onto it. Null when no
-    // such token is buffered.
-    private Item _heldNext;
-    private bool _heldNextValid;
-
-    // Has _inner been exhausted? Once true, MoveNext only drains _ready /
-    // _heldNext, never pumps inner again.
-    private bool _innerExhausted;
-
-    private Item _current;
-    private bool _hasCurrent;
 
     // Conditional-compilation state. Stack of "is this branch's body currently
     // emitting?" flags — one per open #if/#ifdef/#ifndef. _falseDepth counts
@@ -75,110 +64,60 @@ public sealed class PreprocessorTokenStream : ISyncIterator<Item>
         IReadOnlyDictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>> directives,
         Func<Item, IEnumerable<Item>> rewrite = null,
         PreprocessorConditionals conditionals = default)
+        : base(inner)
     {
-        ArgumentNullException.ThrowIfNull(inner);
         ArgumentNullException.ThrowIfNull(directives);
-        _inner = inner;
         _directives = directives;
         _rewrite = rewrite;
         _conditionals = conditionals;
     }
 
-    public Item Current => _hasCurrent ? _current : default;
-
-    public bool MoveNext()
+    protected override void ProcessToken(Item token)
     {
-        while (true)
+        // 1) Conditional-compilation gate. Always runs (suppressed or not)
+        //    — the engine has to track #if/#endif depth even inside a
+        //    false branch, otherwise it can't tell which #endif closes
+        //    which open conditional. Returns true if the token was a
+        //    conditional directive (already consumed); false means fall
+        //    through to suppression + directive-dispatch.
+        if (_conditionals.Enabled && HandleConditional(token))
         {
-            // 1) Anything queued from a previous step? Pop the next ready
-            //    token; don't pump inner this turn — the queue is the
-            //    authoritative source of what to emit next.
-            if (_ready.Count > 0)
-            {
-                _current = _ready.Dequeue();
-                _hasCurrent = true;
-                return true;
-            }
-
-            // 2) Pull the next raw token. _heldNext is preferred over inner
-            //    because we already read it ahead during a previous directive.
-            if (!TryReadNext(out var token))
-            {
-                _hasCurrent = false;
-                _current = default;
-                return false;
-            }
-
-            // 3) Conditional-compilation gate. Always runs (suppressed or not)
-            //    — the engine has to track #if/#endif depth even inside a
-            //    false branch, otherwise it can't tell which #endif closes
-            //    which open conditional. The conditional handler decides
-            //    whether the loop continues, and IsSuppressed below decides
-            //    whether the token below survives to the directive/rewrite
-            //    stage at all.
-            if (_conditionals.Enabled && HandleConditional(token))
-            {
-                continue;
-            }
-
-            // 4) If suppressed by an open false branch, drop the token. Don't
-            //    dispatch directives (user handlers can have side effects like
-            //    populating the macro table) and don't run rewrite.
-            if (_falseDepth > 0)
-            {
-                continue;
-            }
-
-            // 5) Is this token a declared directive?
-            if (_directives.TryGetValue(token.ID, out var handler))
-            {
-                // Collect same-line args. Stops at first token whose line
-                // differs (which gets held for the next outer call) or at
-                // inner-exhaustion.
-                var args = CollectSameLineArgs(token.Position.Line);
-                var injected = handler(args);
-                if (injected != null)
-                {
-                    foreach (var emit in injected)
-                    {
-                        if (emit != null)
-                        {
-                            _ready.Enqueue(emit);
-                        }
-                    }
-                }
-                // Loop: next iteration tries the queue / next-token again.
-                continue;
-            }
-
-            // 6) Non-directive token: route through rewrite (or passthrough).
-            if (_rewrite is null)
-            {
-                _current = token;
-                _hasCurrent = true;
-                return true;
-            }
-            var rewritten = _rewrite(token);
-            if (rewritten != null)
-            {
-                foreach (var emit in rewritten)
-                {
-                    if (emit != null)
-                    {
-                        _ready.Enqueue(emit);
-                    }
-                }
-            }
-            // Loop to drain whatever the rewrite enqueued. A rewrite that
-            // returns empty just suppresses the token — also valid.
+            return;
         }
+
+        // 2) If suppressed by an open false branch, drop the token. Don't
+        //    dispatch directives (user handlers can have side effects like
+        //    populating the macro table) and don't run rewrite.
+        if (_falseDepth > 0)
+        {
+            return;
+        }
+
+        // 3) Is this token a declared directive?
+        if (_directives.TryGetValue(token.ID, out var handler))
+        {
+            // Collect same-line args. Stops at first token whose line
+            // differs (which gets held for the next outer call) or at
+            // inner-exhaustion.
+            var args = CollectSameLineArgs(token.Position.Line);
+            EmitRange(handler(args));
+            return;
+        }
+
+        // 4) Non-directive token: route through rewrite (or passthrough).
+        if (_rewrite is null)
+        {
+            Emit(token);
+            return;
+        }
+        EmitRange(_rewrite(token));
     }
 
     /// <summary>
     /// If <paramref name="token"/> is one of the configured conditional
     /// directives (#if / #ifdef / #ifndef / #else / #endif), drive the branch
-    /// stack and return <c>true</c> (caller should <c>continue</c> the
-    /// MoveNext loop). Returns <c>false</c> when the token is unrelated to
+    /// stack and return <c>true</c> (caller should stop processing this
+    /// token). Returns <c>false</c> when the token is unrelated to
     /// conditional compilation — caller falls through to suppression check +
     /// regular directive dispatch.
     /// </summary>
@@ -304,76 +243,25 @@ public sealed class PreprocessorTokenStream : ISyncIterator<Item>
     }
 
     /// <summary>
-    /// Pull the next token from the held-buffer or the inner iterator.
-    /// Returns false only when both are empty.
-    /// </summary>
-    private bool TryReadNext(out Item token)
-    {
-        if (_heldNextValid)
-        {
-            token = _heldNext;
-            _heldNext = default;
-            _heldNextValid = false;
-            return true;
-        }
-        if (_innerExhausted)
-        {
-            token = default;
-            return false;
-        }
-        if (_inner.MoveNext())
-        {
-            token = _inner.Current;
-            return true;
-        }
-        _innerExhausted = true;
-        token = default;
-        return false;
-    }
-
-    /// <summary>
     /// Drain tokens off the inner iterator that share <paramref name="directiveLine"/>.
-    /// Stops at the first cross-line token (held for the next outer pull) or
-    /// at inner-exhaustion. Unknown positions (line 0) are treated as
-    /// same-line — see remarks on the class.
+    /// Stops at the first cross-line token (held for the next outer pull via
+    /// <see cref="RewritingTokenStream.HoldNext"/>) or at inner-exhaustion.
+    /// Unknown positions (line 0) are treated as same-line — see remarks on
+    /// the class.
     /// </summary>
-    private IReadOnlyList<Item> CollectSameLineArgs(int directiveLine)
-    {
-        var args = new List<Item>();
-        while (TryReadNext(out var next))
+    private IReadOnlyList<Item> CollectSameLineArgs(int directiveLine) =>
+        CollectUntil(next =>
         {
             var nextLine = next.Position.Line;
-            if (nextLine == directiveLine || nextLine == 0)
-            {
-                args.Add(next);
-                continue;
-            }
-            // Different line: hold onto it for the next pull.
-            _heldNext = next;
-            _heldNextValid = true;
-            break;
-        }
-        return args;
-    }
+            // Stop (and hold back) the first cross-line token; line 0 is
+            // "unknown position" and counts as same-line.
+            return nextLine != directiveLine && nextLine != 0;
+        });
 
-    public void Reset()
+    public override void Reset()
     {
-        _ready.Clear();
-        _heldNext = default;
-        _heldNextValid = false;
-        _innerExhausted = false;
-        _current = default;
-        _hasCurrent = false;
         _branchStack.Clear();
         _falseDepth = 0;
-        _inner.Reset();
-    }
-
-    public bool SupportsResetting => _inner.SupportsResetting;
-
-    public void Dispose()
-    {
-        _ready.Clear();
-        _inner.Dispose();
+        base.Reset();
     }
 }
