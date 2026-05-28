@@ -146,7 +146,18 @@ public class Parser
                     var production = productions[nProduction];
                     var nChildren = production.Right.Length;
                     Item reduction;
-                    if (trimReductions && nChildren == 1 && nonterminals.Contains(production.Right[0]))
+                    // Trim single-non-terminal-RHS reductions ONLY when the
+                    // production carries no semantic action — those are the
+                    // "passthrough" rules (e.g. `LOr → LAnd`, `Stmt → Block`)
+                    // whose content propagates verbatim. If the author supplied
+                    // an action / rewriter, they explicitly want it invoked at
+                    // this point — trimming would silently swallow it. (The
+                    // common author footgun: declarator-specifier-list rules
+                    // like `Type → TypeSpecList` where the action resolves a
+                    // marker accumulator into a final type string.)
+                    if (trimReductions && nChildren == 1
+                        && nonterminals.Contains(production.Right[0])
+                        && !production.HasRewriter)
                     {
                         var popped = tokenStack.Pop();
                         reduction = new Item(production.Left, popped.Content, popped.Position);
@@ -265,7 +276,18 @@ public class Parser
                     var production = productions[nProduction];
                     var nChildren = production.Right.Length;
                     Item reduction;
-                    if (trimReductions && nChildren == 1 && nonterminals.Contains(production.Right[0]))
+                    // Trim single-non-terminal-RHS reductions ONLY when the
+                    // production carries no semantic action — those are the
+                    // "passthrough" rules (e.g. `LOr → LAnd`, `Stmt → Block`)
+                    // whose content propagates verbatim. If the author supplied
+                    // an action / rewriter, they explicitly want it invoked at
+                    // this point — trimming would silently swallow it. (The
+                    // common author footgun: declarator-specifier-list rules
+                    // like `Type → TypeSpecList` where the action resolves a
+                    // marker accumulator into a final type string.)
+                    if (trimReductions && nChildren == 1
+                        && nonterminals.Contains(production.Right[0])
+                        && !production.HasRewriter)
                     {
                         var popped = tokenStack.Pop();
                         reduction = new Item(production.Left, popped.Content, popped.Position);
