@@ -88,8 +88,28 @@ internal sealed class NfaBuilder
             CharClassRx cc => Class(cc),
             CharSequenceRx s => ConcatChars(s.Chars),
             GroupRx g => Repeat(g.Items, g.Multiplicity),
+            AlternationRx a => Alternation(a.Alternatives),
             _ => throw new NotSupportedException($"Unsupported IRx node: {rx.GetType()}"),
         };
+    }
+
+    /// <summary>
+    /// Thompson construction for alternation: fresh start ε-edges to
+    /// each alternative's start, each alternative's accept ε-edges to
+    /// a fresh union accept. NFA subset construction collapses the
+    /// fan-in/fan-out epsilons into the right DFA structure.
+    /// </summary>
+    private (int Start, int Accept) Alternation(IReadOnlyList<IRx> alternatives)
+    {
+        var start = AddState();
+        var accept = AddState();
+        foreach (var alt in alternatives)
+        {
+            var (altStart, altAccept) = Visit(alt);
+            AddEpsilon(start, altStart);
+            AddEpsilon(altAccept, accept);
+        }
+        return (start, accept);
     }
 
     private (int Start, int Accept) Literal(int lo, int hi)

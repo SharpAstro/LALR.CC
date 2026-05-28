@@ -228,11 +228,66 @@ public class IRxParserTests
         Assert.Throws<FormatException>(() => IRxParser.Parse("ab)"));
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Alternation
+    // ──────────────────────────────────────────────────────────────────────────
+
     [Fact]
-    public void Alternation_NotSupported()
+    public void Alternation_TwoLiterals_BuildsAlternationNode()
     {
-        var ex = Assert.Throws<FormatException>(() => IRxParser.Parse("a|b"));
-        Assert.Contains("alternation", ex.Message);
+        var rx = IRxParser.Parse("a|b");
+        var alt = Assert.IsType<AlternationRx>(rx);
+        Assert.Equal("a|b", alt.Pattern);
+    }
+
+    [Fact]
+    public void Alternation_ThreeWay_PreservesOrder()
+    {
+        var rx = IRxParser.Parse("a|b|c");
+        var alt = Assert.IsType<AlternationRx>(rx);
+        Assert.Equal("a|b|c", alt.Pattern);
+    }
+
+    [Fact]
+    public void Alternation_InsideGroup_BoundedToGroup()
+    {
+        // `a(b|c)d` is a-then-(b-or-c)-then-d, NOT (a-then-b)-or-(c-then-d).
+        // The semantic claim: the outer node is a concat group of three
+        // items, NOT an alternation. (GroupRx.Pattern's historical
+        // formatting wraps multi-item Once groups in parens, so the
+        // formatted string is `(a(b|c)d)` — the round-trip parses back
+        // to the same shape, but the formatting is the pre-existing
+        // convention rather than the input verbatim.)
+        var rx = IRxParser.Parse("a(b|c)d");
+        Assert.IsNotType<AlternationRx>(rx);
+    }
+
+    [Fact]
+    public void Alternation_InRepetition_TheStringLiteralPattern()
+    {
+        // The canonical C string-literal pattern: `"(\\.|[^"\\])*"`.
+        // Without alternation inside the (…)* you can't express this.
+        var rx = IRxParser.Parse("\"(\\\\.|[^\"\\\\])*\"");
+        // Compiles to a DFA without error — that's the load-bearing assertion.
+        var dfa = DfaCompiler.Compile(rx, patternId: 0);
+        Assert.NotNull(dfa);
+    }
+
+    [Fact]
+    public void Alternation_BackslashPipe_Literal()
+    {
+        // `\|` is the literal pipe character (escape), not the alternation operator.
+        var rx = IRxParser.Parse("a\\|b");
+        Assert.IsNotType<AlternationRx>(rx);
+    }
+
+    [Fact]
+    public void Alternation_EmptyAlternative_Throws()
+    {
+        // `a||b` and `|a` and `a|` are all malformed.
+        Assert.Throws<FormatException>(() => IRxParser.Parse("a||b"));
+        Assert.Throws<FormatException>(() => IRxParser.Parse("|a"));
+        Assert.Throws<FormatException>(() => IRxParser.Parse("a|"));
     }
 
     // ──────────────────────────────────────────────────────────────────────────

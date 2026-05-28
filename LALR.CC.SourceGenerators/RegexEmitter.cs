@@ -30,6 +30,7 @@ internal static class RegexEmitter
     private const string CharRangeRxFqn = "global::LALR.CC.LexicalGrammar.CharRangeRx";
     private const string CharClassRxFqn = "global::LALR.CC.LexicalGrammar.CharClassRx";
     private const string GroupRxFqn = "global::LALR.CC.LexicalGrammar.GroupRx";
+    private const string AlternationRxFqn = "global::LALR.CC.LexicalGrammar.AlternationRx";
     private const string MultiplicityFqn = "global::LALR.CC.LexicalGrammar.Multiplicity";
 
     /// <summary>
@@ -50,12 +51,42 @@ internal static class RegexEmitter
             throw new RegexFormatException("empty pattern", 0, pattern);
         }
         var state = new ParserState(pattern);
-        var rx = ParseConcat(state);
+        var rx = ParseAlternation(state);
         if (state.HasMore)
         {
             throw Fmt(state, $"unexpected '{state.Current}'");
         }
         return rx;
+    }
+
+    /// <summary>
+    /// Lowest-precedence form: <c>concat ('|' concat)*</c>. Mirrors
+    /// <c>IRxParser.ParseAlternation</c> in the runtime — both must
+    /// stay in lockstep or the lexer behaves differently between the
+    /// generator-side pre-bake and the runtime fallback.
+    /// </summary>
+    private static string ParseAlternation(ParserState p)
+    {
+        var first = ParseConcat(p);
+        if (!p.HasMore || p.Current != '|')
+        {
+            return first;
+        }
+        var branches = new List<string> { first };
+        while (p.HasMore && p.Current == '|')
+        {
+            p.Pos++; // consume '|'
+            branches.Add(ParseConcat(p));
+        }
+        var sb = new StringBuilder();
+        sb.Append("new ").Append(AlternationRxFqn).Append('(');
+        for (var i = 0; i < branches.Count; i++)
+        {
+            if (i > 0) { sb.Append(", "); }
+            sb.Append(branches[i]);
+        }
+        sb.Append(')');
+        return sb.ToString();
     }
 
     private sealed class ParserState
@@ -93,7 +124,7 @@ internal static class RegexEmitter
     private static string ParseConcat(ParserState p)
     {
         var atoms = new List<string>();
-        while (p.HasMore && p.Current != ')')
+        while (p.HasMore && p.Current != ')' && p.Current != '|')
         {
             atoms.Add(ParseAtom(p));
         }
@@ -127,7 +158,10 @@ internal static class RegexEmitter
                 atom = ParseClass(p);
                 break;
             case '|':
-                throw Fmt(p, "alternation '|' is not supported; use multiple lexer rules instead");
+                // ParseAlternation / ParseConcat should consume '|' at the
+                // right boundary; hitting it here means an alternative is
+                // missing (e.g. `a||b` or `|a` or `(|a)`).
+                throw Fmt(p, "missing alternative — '|' must separate non-empty expressions");
             case ')':
             case '?':
             case '+':
@@ -161,7 +195,9 @@ internal static class RegexEmitter
     private static string ParseGroup(ParserState p)
     {
         p.Pos++; // consume '('
-        var inner = ParseConcat(p);
+        // Recurse into ParseAlternation so a group bounds the scope of
+        // any inner '|' — same as the runtime parser.
+        var inner = ParseAlternation(p);
         if (!p.TryConsume(')'))
         {
             throw Fmt(p, "expected ')'");

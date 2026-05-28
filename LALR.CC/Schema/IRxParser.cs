@@ -12,17 +12,24 @@ namespace LALR.CC.Schema;
 /// turn it into a typed pattern tree.
 /// </summary>
 /// <remarks>
-/// Supported syntax (deliberately minimal — alternation lives at the lexer-rule level
-/// and the byte-DFA's longest-match + first-rule-wins handles it):
+/// Supported syntax:
 /// <list type="bullet">
 /// <item>Literals — any character that isn't a metachar.</item>
 /// <item>Escapes — <c>\\ \. \[ \] \( \) \{ \} \? \+ \* \^ \$ \- \| \/ \r \n \t</c>.</item>
 /// <item>Character classes — <c>[abc]</c>, ranges <c>[a-z]</c>, mixed <c>[a-zA-Z0-9_]</c>, negation <c>[^abc]</c>.</item>
 /// <item>Quantifiers — <c>?</c>, <c>+</c>, <c>*</c>, <c>{n}</c>, <c>{n,m}</c>, <c>{n,}</c>.</item>
 /// <item>Grouping — <c>(...)</c>; quantifiers apply to the group as a whole.</item>
+/// <item>Alternation — <c>A|B|C</c>. Lowest precedence; binds across the full surrounding
+///   concat. Inside a group <c>(A|B)</c> the alternation is local to the group.</item>
 /// </list>
-/// Not supported: alternation <c>|</c> (use multiple lexer rules), anchors <c>^ $</c>,
-/// backreferences, lookaround, Unicode property classes <c>\p{…}</c>.
+/// Outer-level alternation can still be expressed by giving the lexer multiple rules
+/// with the same accept name (longest match wins, first rule wins on ties) — but
+/// alternation inside repetition (<c>("a|b)*</c>, the canonical C string-literal
+/// pattern) requires this in-pattern form.
+/// <para>
+/// Not supported: anchors <c>^ $</c>, backreferences, lookaround, Unicode property
+/// classes <c>\p{…}</c>.
+/// </para>
 /// </remarks>
 public static class IRxParser
 {
@@ -38,12 +45,35 @@ public static class IRxParser
             throw new FormatException("empty pattern");
         }
         var state = new ParserState(pattern);
-        var rx = ParseConcat(state);
+        var rx = ParseAlternation(state);
         if (state.HasMore)
         {
             throw Fmt(state, $"unexpected '{state.Current}'");
         }
         return rx;
+    }
+
+    /// <summary>
+    /// Lowest-precedence form: <c>concat ('|' concat)*</c>. Recursive
+    /// descent — called by <see cref="Parse"/> at top level and by
+    /// <see cref="ParseGroup"/> inside parentheses so a group bounds
+    /// the alternation's scope (<c>a(b|c)d</c> means a-then-(b-or-c)-then-d,
+    /// NOT (a-then-b)-or-(c-then-d)).
+    /// </summary>
+    private static IRx ParseAlternation(ParserState p)
+    {
+        var first = ParseConcat(p);
+        if (!p.HasMore || p.Current != '|')
+        {
+            return first;
+        }
+        var branches = new List<IRx> { first };
+        while (p.HasMore && p.Current == '|')
+        {
+            p.Pos++; // consume '|'
+            branches.Add(ParseConcat(p));
+        }
+        return new AlternationRx(branches.ToArray());
     }
 
     private sealed class ParserState
@@ -79,7 +109,7 @@ public static class IRxParser
     private static IRx ParseConcat(ParserState p)
     {
         var atoms = new List<IRx>();
-        while (p.HasMore && p.Current != ')')
+        while (p.HasMore && p.Current != ')' && p.Current != '|')
         {
             atoms.Add(ParseAtom(p));
         }
@@ -106,7 +136,10 @@ public static class IRxParser
                 atom = ParseClass(p);
                 break;
             case '|':
-                throw Fmt(p, "alternation '|' is not supported; use multiple lexer rules instead");
+                // '|' should be consumed by ParseAlternation / ParseConcat;
+                // hitting it here means an alternative is missing (e.g. `a||b`
+                // or `|a` or `(|a)`).
+                throw Fmt(p, "missing alternative — '|' must separate non-empty expressions");
             case ')':
             case '?':
             case '+':
@@ -140,7 +173,10 @@ public static class IRxParser
     private static IRx ParseGroup(ParserState p)
     {
         p.Pos++; // consume '('
-        var inner = ParseConcat(p);
+        // Recurse into ParseAlternation so a group bounds the scope of
+        // any inner '|' — `a(b|c)d` is a-then-(b-or-c)-then-d, not a
+        // global "a-then-b OR c-then-d" split.
+        var inner = ParseAlternation(p);
         if (!p.TryConsume(')'))
         {
             throw Fmt(p, "expected ')'");
