@@ -157,6 +157,14 @@ internal static class RegexEmitter
             case '[':
                 atom = ParseClass(p);
                 break;
+            case '.':
+                // `.` is "any codepoint except newline" — emit the same negated
+                // single-char class the runtime parser produces, so the generator-
+                // pre-baked IRx tree is bit-for-bit identical to the runtime parse.
+                p.Pos++;
+                atom = "new " + CharClassRxFqn + "(false, new " + SingleCharFqn
+                    + "[] { " + EmitCharRx('\n') + " })";
+                break;
             case '|':
                 // ParseAlternation / ParseConcat should consume '|' at the
                 // right boundary; hitting it here means an alternative is

@@ -21,6 +21,10 @@ namespace LALR.CC.Schema;
 /// <item>Grouping — <c>(...)</c>; quantifiers apply to the group as a whole.</item>
 /// <item>Alternation — <c>A|B|C</c>. Lowest precedence; binds across the full surrounding
 ///   concat. Inside a group <c>(A|B)</c> the alternation is local to the group.</item>
+/// <item>Any-char wildcard — <c>.</c> matches any single codepoint except newline
+///   (<c>\n</c>). Lowered to <c>CharClassRx(positive: false, '\n')</c>, so it
+///   reuses the same complement machinery as <c>[^\n]</c>. Use <c>\.</c> for a
+///   literal dot.</item>
 /// </list>
 /// Outer-level alternation can still be expressed by giving the lexer multiple rules
 /// with the same accept name (longest match wins, first rule wins on ties) — but
@@ -134,6 +138,13 @@ public static class IRxParser
                 break;
             case '[':
                 atom = ParseClass(p);
+                break;
+            case '.':
+                // `.` is "any codepoint except newline" — lowered to a negated
+                // single-char class so the existing CharClassRx complement path
+                // handles it (no new IRx node, no DFA-compiler change).
+                p.Pos++;
+                atom = new CharClassRx(positive: false, new CharRx('\n'));
                 break;
             case '|':
                 // '|' should be consumed by ParseAlternation / ParseConcat;

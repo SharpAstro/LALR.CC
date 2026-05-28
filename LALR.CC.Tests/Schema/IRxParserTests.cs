@@ -291,6 +291,66 @@ public class IRxParserTests
     }
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Any-char wildcard `.`
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Dot_MatchesAnyCharExceptNewline()
+    {
+        var rx = IRxParser.Parse(".");
+        Assert.Equal(1, MatchBytes(rx, "a").Length);
+        Assert.Equal(1, MatchBytes(rx, "Z").Length);
+        Assert.Equal(1, MatchBytes(rx, "0").Length);
+        Assert.Equal(1, MatchBytes(rx, " ").Length);
+        Assert.Equal(1, MatchBytes(rx, "!").Length);
+        // CR matches (only LF is excluded — same as PCRE default)
+        Assert.Equal(1, MatchBytes(rx, "\r").Length);
+        // LF does not match
+        Assert.Equal(0, MatchBytes(rx, "\n").Length);
+    }
+
+    [Fact]
+    public void Dot_WithStar_MatchesNonNewlineRun()
+    {
+        // `.*` is the "rest of line" idiom — eats everything until a newline.
+        var rx = IRxParser.Parse(".*");
+        Assert.Equal(11, MatchBytes(rx, "hello world").Length);
+        Assert.Equal(5, MatchBytes(rx, "hello\nworld").Length);
+        Assert.Equal(0, MatchBytes(rx, "\nrest").Length);
+    }
+
+    [Fact]
+    public void Dot_InLineCommentPattern()
+    {
+        // `//.*` — the canonical C++/C99 single-line comment shape.
+        // `.*` stops at `\n`, so the LF is NOT included in the match.
+        var rx = IRxParser.Parse("//.*");
+        Assert.Equal(12, MatchBytes(rx, "// a comment\n").Length);
+        Assert.Equal(2, MatchBytes(rx, "//").Length);
+        Assert.Equal(0, MatchBytes(rx, "/* not me */").Length);
+    }
+
+    [Fact]
+    public void EscapedDot_IsLiteral()
+    {
+        // `\.` matches a literal dot — sanity check that the escape table
+        // still wins over the new `.` atom path.
+        var rx = IRxParser.Parse(@"\.");
+        Assert.Equal(1, MatchBytes(rx, ".").Length);
+        Assert.Equal(0, MatchBytes(rx, "a").Length);
+    }
+
+    [Fact]
+    public void Dot_InsideCharClass_IsLiteral()
+    {
+        // `[.]` is a literal dot — character classes don't treat `.` as
+        // the wildcard metachar.
+        var rx = IRxParser.Parse("[.]");
+        Assert.Equal(1, MatchBytes(rx, ".").Length);
+        Assert.Equal(0, MatchBytes(rx, "a").Length);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Real Bootstrap-style patterns
     // ──────────────────────────────────────────────────────────────────────────
 
