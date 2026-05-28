@@ -111,7 +111,7 @@ internal static class SchemaValidator
                 if (!IsKnownConditionalRole(role))
                 {
                     errors.Add(new ValidationError(path,
-                        "unknown role; expected one of if, ifdef, ifndef, else, endif"));
+                        "unknown role; expected one of if, ifdef, ifndef, else, elif, endif"));
                     continue;
                 }
                 if (string.IsNullOrEmpty(symbol))
@@ -128,7 +128,7 @@ internal static class SchemaValidator
 
     private static bool IsKnownConditionalRole(string role) => role switch
     {
-        "if" or "ifdef" or "ifndef" or "else" or "endif" => true,
+        "if" or "ifdef" or "ifndef" or "else" or "elif" or "endif" => true,
         _ => false,
     };
 

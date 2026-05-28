@@ -30,8 +30,9 @@ public readonly struct PreprocessorConditionals
     /// Construct an enabled conditional configuration. Symbol ids of <c>-1</c>
     /// mean the corresponding role isn't bound — header guards need at least
     /// <paramref name="ifDefSymbol"/> or <paramref name="ifNDefSymbol"/> plus
-    /// <paramref name="endIfSymbol"/>; the <paramref name="elseSymbol"/> and
-    /// <paramref name="ifSymbol"/> are optional.
+    /// <paramref name="endIfSymbol"/>; <paramref name="elseSymbol"/>,
+    /// <paramref name="elifSymbol"/>, and <paramref name="ifSymbol"/> are
+    /// optional.
     /// </summary>
     public PreprocessorConditionals(
         int ifSymbol,
@@ -39,13 +40,15 @@ public readonly struct PreprocessorConditionals
         int ifNDefSymbol,
         int elseSymbol,
         int endIfSymbol,
-        Func<string, bool> isDefined)
+        Func<string, bool> isDefined,
+        int elifSymbol = -1)
     {
         ArgumentNullException.ThrowIfNull(isDefined);
         IfSymbol = ifSymbol;
         IfDefSymbol = ifDefSymbol;
         IfNDefSymbol = ifNDefSymbol;
         ElseSymbol = elseSymbol;
+        ElifSymbol = elifSymbol;
         EndIfSymbol = endIfSymbol;
         IsDefined = isDefined;
     }
@@ -61,6 +64,9 @@ public readonly struct PreprocessorConditionals
 
     /// <summary>Lexer symbol id for <c>#else</c>. <c>-1</c> when unbound.</summary>
     public int ElseSymbol { get; }
+
+    /// <summary>Lexer symbol id for <c>#elif</c>. <c>-1</c> when unbound.</summary>
+    public int ElifSymbol { get; }
 
     /// <summary>Lexer symbol id for <c>#endif</c>. <c>-1</c> when unbound.</summary>
     public int EndIfSymbol { get; }

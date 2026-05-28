@@ -40,15 +40,29 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
     private readonly Func<Item, IEnumerable<Item>> _rewrite;
     private readonly PreprocessorConditionals _conditionals;
 
-    // Conditional-compilation state. Stack of "is this branch's body currently
-    // emitting?" flags — one per open #if/#ifdef/#ifndef. _falseDepth counts
-    // false entries on the stack so the "are we suppressed?" check is O(1).
-    // Tokens are emitted only when _falseDepth == 0 (or the conditional engine
-    // is disabled). The engine still consumes #if/#ifdef/#ifndef/#else/#endif
-    // inside a suppressed region — depth tracking has to keep working so we
-    // pop the right number of times when we hit the matching #endif.
-    private readonly Stack<bool> _branchStack = new();
+    // Conditional-compilation state. Stack of branch entries — one per
+    // open #if/#ifdef/#ifndef. Each entry tracks (Emitting, AnyEmittedYet):
+    // the first bit is "is the current branch's body emitting?", the second
+    // is "has any branch in this if/elif/else chain emitted yet?" — required
+    // so #elif knows whether to even evaluate its expression (if a prior
+    // arm was true, all subsequent arms are suppressed regardless of their
+    // expressions). _falseDepth counts the suppressed entries for O(1)
+    // "are we currently emitting?" checks. The engine still consumes
+    // conditional directives inside suppressed regions so depth tracking
+    // stays accurate.
+    private readonly Stack<BranchState> _branchStack = new();
     private int _falseDepth;
+
+    private readonly struct BranchState
+    {
+        public BranchState(bool emitting, bool anyEmittedYet)
+        {
+            Emitting = emitting;
+            AnyEmittedYet = anyEmittedYet;
+        }
+        public bool Emitting { get; }
+        public bool AnyEmittedYet { get; }
+    }
 
     /// <summary>
     /// Construct the adapter. <paramref name="directives"/> maps
@@ -167,6 +181,18 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
             PushBranch(branch);
             return true;
         }
+        if (c.ElifSymbol >= 0 && id == c.ElifSymbol)
+        {
+            var args = CollectSameLineArgs(token.Position.Line);
+            // The #elif expression is evaluated ONLY when (a) no prior arm
+            // in this if/elif chain emitted (otherwise the chain is locked
+            // off) AND (b) the enclosing outer context isn't suppressing.
+            var top = _branchStack.Peek();
+            var outerEmitting = _falseDepth - (top.Emitting ? 0 : 1) == 0;
+            var branch = !top.AnyEmittedYet && outerEmitting && EvaluateIfExpression(args);
+            ElifBranch(branch);
+            return true;
+        }
         if (id == c.ElseSymbol)
         {
             // Drop any same-line args (real C: #else takes none).
@@ -184,25 +210,19 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
     }
 
     /// <summary>
-    /// Evaluate the expression after <c>#if</c>. v1 supports only literal
-    /// <c>0</c> and <c>1</c> — anything else falls back to <c>false</c>.
-    /// Full expression evaluation (<c>#if X &amp;&amp; Y &gt; 5</c>) is a
-    /// deferred follow-up; header guards (the user's stated need) use only
-    /// <c>#ifdef</c>/<c>#ifndef</c> anyway.
+    /// Evaluate the expression after <c>#if</c> / <c>#elif</c>. Delegates to
+    /// <see cref="PreprocessorExpressionEvaluator"/> for the full C
+    /// constant-expression sub-language: integer literals (decimal/hex),
+    /// <c>defined(NAME)</c>, arithmetic / comparison / logical / bitwise /
+    /// ternary operators, parens, and object-like macro expansion via the
+    /// rewrite hook so <c>#if VERSION &gt;= 2</c> works.
     /// </summary>
-    private static bool EvaluateIfExpression(IReadOnlyList<Item> args)
-    {
-        if (args.Count == 0)
-        {
-            return false;
-        }
-        var s = args[0].Content as string;
-        return s == "1";
-    }
+    private bool EvaluateIfExpression(IReadOnlyList<Item> args)
+        => PreprocessorExpressionEvaluator.Evaluate(args, _conditionals.IsDefined, _rewrite);
 
     private void PushBranch(bool emitting)
     {
-        _branchStack.Push(emitting);
+        _branchStack.Push(new BranchState(emitting, anyEmittedYet: emitting));
         if (!emitting)
         {
             _falseDepth++;
@@ -217,7 +237,7 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
                 "preprocessor: #endif without a matching #if/#ifdef/#ifndef");
         }
         var top = _branchStack.Pop();
-        if (!top)
+        if (!top.Emitting)
         {
             _falseDepth--;
         }
@@ -231,15 +251,33 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
                 "preprocessor: #else without a matching #if/#ifdef/#ifndef");
         }
         var top = _branchStack.Pop();
-        if (top)
+        // #else emits IFF no prior arm in this chain has emitted yet. If any
+        // prior arm was true, AnyEmittedYet is true here → #else stays false.
+        var newEmitting = !top.AnyEmittedYet;
+        if (top.Emitting && !newEmitting) { _falseDepth++; }
+        if (!top.Emitting && newEmitting) { _falseDepth--; }
+        _branchStack.Push(new BranchState(newEmitting, top.AnyEmittedYet || newEmitting));
+    }
+
+    /// <summary>
+    /// Transition the current branch to a new <c>#elif</c> arm. If the new
+    /// arm's expression evaluated true (computed by the caller, given the
+    /// outer-context-and-prior-arm-suppression check), this arm becomes
+    /// the emitting one and marks <c>AnyEmittedYet</c>. If any prior arm
+    /// already emitted, the caller has already passed false here and we
+    /// stay suppressed with <c>AnyEmittedYet</c> preserved.
+    /// </summary>
+    private void ElifBranch(bool emitting)
+    {
+        if (_branchStack.Count == 0)
         {
-            _falseDepth++;
+            throw new InvalidOperationException(
+                "preprocessor: #elif without a matching #if/#ifdef/#ifndef");
         }
-        else
-        {
-            _falseDepth--;
-        }
-        _branchStack.Push(!top);
+        var top = _branchStack.Pop();
+        if (top.Emitting && !emitting) { _falseDepth++; }
+        if (!top.Emitting && emitting) { _falseDepth--; }
+        _branchStack.Push(new BranchState(emitting, top.AnyEmittedYet || emitting));
     }
 
     /// <summary>

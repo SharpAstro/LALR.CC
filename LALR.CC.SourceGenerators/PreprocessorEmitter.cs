@@ -125,6 +125,7 @@ internal static class PreprocessorEmitter
                 case "ifdef": block.IfDefSymbol = id; break;
                 case "ifndef": block.IfNDefSymbol = id; break;
                 case "else": block.ElseSymbol = id; break;
+                case "elif": block.ElifSymbol = id; break;
                 case "endif": block.EndIfSymbol = id; break;
             }
         }
@@ -213,7 +214,8 @@ internal static class PreprocessorEmitter
         sb.Append("ifNDefSymbol: ").Append(conditionals.IfNDefSymbol).Append(", ");
         sb.Append("elseSymbol: ").Append(conditionals.ElseSymbol).Append(", ");
         sb.Append("endIfSymbol: ").Append(conditionals.EndIfSymbol).AppendLine(",");
-        sb.AppendLine("            isDefined: impl.IsDefined);");
+        sb.Append("            isDefined: impl.IsDefined,");
+        sb.Append(" elifSymbol: ").Append(conditionals.ElifSymbol).AppendLine(");");
         sb.AppendLine("    }");
     }
 
@@ -254,9 +256,10 @@ internal static class PreprocessorEmitter
         public int IfDefSymbol { get; set; } = -1;
         public int IfNDefSymbol { get; set; } = -1;
         public int ElseSymbol { get; set; } = -1;
+        public int ElifSymbol { get; set; } = -1;
         public int EndIfSymbol { get; set; } = -1;
         public bool Any => IfSymbol >= 0 || IfDefSymbol >= 0 || IfNDefSymbol >= 0
-            || ElseSymbol >= 0 || EndIfSymbol >= 0;
+            || ElseSymbol >= 0 || ElifSymbol >= 0 || EndIfSymbol >= 0;
     }
 
     private readonly struct DirectiveInfo
