@@ -43,7 +43,8 @@ public static class PreprocessorExpressionEvaluator
     public static bool Evaluate(
         IReadOnlyList<Item> args,
         Func<string, bool> isDefined,
-        Func<Item, IEnumerable<Item>> rewrite = null)
+        Func<Item, IEnumerable<Item>> rewrite = null,
+        Func<string, IReadOnlyList<Item>, IEnumerable<Item>> expandFuncMacro = null)
     {
         if (args == null || args.Count == 0)
         {
@@ -80,6 +81,32 @@ public static class PreprocessorExpressionEvaluator
                 }
                 continue;
             }
+            // Function-like macro expansion: IDENT ( args-to-balance ).
+            // Object-like rewrite handles bare identifiers; function-like
+            // macros need paren-balanced argument collection, which can't
+            // be done one token at a time — we consume the arg list here.
+            if (expandFuncMacro != null
+                && content is not null && IsIdent(content) && i + 1 < args.Count
+                && (args[i + 1].Content as string) == "(")
+            {
+                // Collect paren-balanced arguments.
+                var argTokens = new List<Item>();
+                var depth = 1;
+                i += 2; // skip IDENT and opening (
+                while (i < args.Count && depth > 0)
+                {
+                    var at = args[i].Content as string;
+                    if (at == "(") depth++;
+                    else if (at == ")") { depth--; if (depth == 0) break; }
+                    argTokens.Add(args[i]);
+                    i++;
+                }
+                // i now points at the closing ) (consumed by the loop),
+                // or past end. Expand the macro with its arguments.
+                foreach (var et in expandFuncMacro(content, argTokens))
+                { if (et != null) { expanded.Add(et); } }
+                continue;
+            }
             if (rewrite != null)
             {
                 foreach (var et in rewrite(t)) { if (et != null) { expanded.Add(et); } }
@@ -93,6 +120,13 @@ public static class PreprocessorExpressionEvaluator
         var parser = new Parser(expanded, isDefined);
         var value = parser.ParseTernary();
         return value != 0;
+    }
+
+    private static bool IsIdent(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        var c = s[0];
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
     }
 
     private sealed class Parser

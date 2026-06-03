@@ -39,6 +39,17 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
     private readonly IReadOnlyDictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>> _directives;
     private readonly Func<Item, IEnumerable<Item>> _rewrite;
     private readonly PreprocessorConditionals _conditionals;
+    /// <summary>
+    /// Optional function-like macro expander for #if expressions.
+    /// Set after construction to enable expansion of macros like
+    /// <c>L_INTHASBITS(17)</c> inside <c>#if</c> / <c>#elif</c>.
+    /// </summary>
+    public Func<string, IReadOnlyList<Item>, IEnumerable<Item>> ExpandFuncMacro
+    {
+        get => _expandFuncMacro;
+        set => _expandFuncMacro = value;
+    }
+    private Func<string, IReadOnlyList<Item>, IEnumerable<Item>> _expandFuncMacro;
 
     // Conditional-compilation state. Stack of branch entries — one per
     // open #if/#ifdef/#ifndef. Each entry tracks (Emitting, AnyEmittedYet):
@@ -77,13 +88,15 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
         ISyncIterator<Item> inner,
         IReadOnlyDictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>> directives,
         Func<Item, IEnumerable<Item>> rewrite = null,
-        PreprocessorConditionals conditionals = default)
+        PreprocessorConditionals conditionals = default,
+        Func<string, IReadOnlyList<Item>, IEnumerable<Item>> expandFuncMacro = null)
         : base(inner)
     {
         ArgumentNullException.ThrowIfNull(directives);
         _directives = directives;
         _rewrite = rewrite;
         _conditionals = conditionals;
+        _expandFuncMacro = expandFuncMacro;
     }
 
     protected override void ProcessToken(Item token)
@@ -218,7 +231,7 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
     /// rewrite hook so <c>#if VERSION &gt;= 2</c> works.
     /// </summary>
     private bool EvaluateIfExpression(IReadOnlyList<Item> args)
-        => PreprocessorExpressionEvaluator.Evaluate(args, _conditionals.IsDefined, _rewrite);
+        => PreprocessorExpressionEvaluator.Evaluate(args, _conditionals.IsDefined, _rewrite, _expandFuncMacro);
 
     private void PushBranch(bool emitting)
     {
