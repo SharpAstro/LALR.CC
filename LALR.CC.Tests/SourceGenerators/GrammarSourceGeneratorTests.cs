@@ -309,6 +309,25 @@ public class GrammarSourceGeneratorTests
         Assert.Contains("public sealed record MakeAdd(Item Arg0, Item Arg1, Item Arg2);", astSource);
     }
 
+    [Fact]
+    public void Visitor_EmitsIdentityVisitorWithOnePassThroughPerAction()
+    {
+        var (trees, diags) = RunGenerator(SampleArithmeticWithActions, "arithmetic.lalr.yaml", "MyApp");
+        Assert.Empty(diags);
+
+        // The visitor file carries the interface AND a ready-made identity
+        // implementation generated from the same action list, so a top-down
+        // consumer (e.g. a typed-IR front end) needs no hand-written visitor.
+        var visitorSource = trees.Select(t => t.ToString())
+            .Single(src => src.Contains("interface IVisitor", StringComparison.Ordinal));
+
+        Assert.Contains("public sealed class IdentityVisitor : IVisitor<object>", visitorSource);
+        Assert.Contains("public static readonly IdentityVisitor Instance = new();", visitorSource);
+        // One pass-through Visit per distinct action record — returns its node unchanged.
+        Assert.Contains("public object Visit(MakeNum node) => node;", visitorSource);
+        Assert.Contains("public object Visit(MakeAdd node) => node;", visitorSource);
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
     // LALR0003: structural-validation diagnostics
     // ──────────────────────────────────────────────────────────────────────────

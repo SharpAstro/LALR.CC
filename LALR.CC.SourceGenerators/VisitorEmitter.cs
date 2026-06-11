@@ -55,6 +55,8 @@ internal static class VisitorEmitter
 
         EmitVisitorInterface(sb, actions);
         sb.AppendLine();
+        EmitIdentityVisitor(sb, actions);
+        sb.AppendLine();
         EmitBuildActions(sb, actions);
         sb.AppendLine();
         EmitBuildWithVisitor(sb);
@@ -257,6 +259,43 @@ internal static class VisitorEmitter
         {
             var a = actions[i];
             sb.Append("        T Visit(").Append(a.MethodName).AppendLine(" node);");
+        }
+        sb.AppendLine("    }");
+    }
+
+    /// <summary>
+    /// Emits a ready-made <see cref="IVisitor{T}"/> implementation whose every
+    /// <c>Visit</c> overload returns its argument unchanged (identity). Generated
+    /// from the SAME action list as the interface, so the two can never drift.
+    /// </summary>
+    /// <remarks>
+    /// Driving the parser with this visitor leaves each reduced <c>Item.Content</c>
+    /// holding the raw generated AST record (terminal children stay raw lexeme
+    /// strings), which lets a consumer walk the concrete parse tree TOP-DOWN with
+    /// full scope/type context instead of consuming the parser's bottom-up
+    /// reductions. It is the natural companion for a typed-IR / tree-rewriting
+    /// front end (e.g. dotcc's <c>IrBuilder</c>), and replaces the
+    /// hand-/script-maintained identity visitor such consumers would otherwise
+    /// carry. Stateless, so a shared <c>Instance</c> singleton is exposed.
+    /// </remarks>
+    private static void EmitIdentityVisitor(StringBuilder sb, List<ActionInfo> actions)
+    {
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// A ready-made <see cref=\"IVisitor{T}\"/> whose every <c>Visit</c> overload");
+        sb.AppendLine("    /// returns its argument unchanged. Driving the parser with this leaves each");
+        sb.AppendLine("    /// reduced <c>Item.Content</c> holding the raw generated record (terminal");
+        sb.AppendLine("    /// children stay raw lexeme strings), so a consumer can walk the concrete");
+        sb.AppendLine("    /// parse tree TOP-DOWN with full context instead of the parser's bottom-up");
+        sb.AppendLine("    /// reductions. Generated from the same action set as <see cref=\"IVisitor{T}\"/>,");
+        sb.AppendLine("    /// so it can never drift from it.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    public sealed class IdentityVisitor : IVisitor<object>");
+        sb.AppendLine("    {");
+        sb.AppendLine("        /// <summary>Shared singleton — the visitor is stateless.</summary>");
+        sb.AppendLine("        public static readonly IdentityVisitor Instance = new();");
+        foreach (var a in actions)
+        {
+            sb.Append("        public object Visit(").Append(a.MethodName).AppendLine(" node) => node;");
         }
         sb.AppendLine("    }");
     }
