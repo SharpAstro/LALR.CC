@@ -70,6 +70,23 @@ public class PipeBytesLexerTests
     }
 
     [Fact]
+    public async Task InitialLine_ShiftsLineBase()
+    {
+        // Parity with BytesLexer: a high line base shifts every token's reported
+        // line (column / byte offset unaffected), and a newline bumps the line
+        // relative to that base.
+        const int Base = 1 << 20;
+        using var lexer = PipeBytesLexer.FromString("12\n34", ArithTable(),
+            cancellationToken: TestContext.Current.CancellationToken, initialLine: Base);
+        var tokens = await CollectAsync(lexer);
+        Assert.Equal(2, tokens.Count);
+        Assert.Equal(Base, tokens[0].Position.Line);
+        Assert.Equal(1, tokens[0].Position.Column);
+        Assert.Equal(Base + 1, tokens[1].Position.Line);
+        Assert.Equal(3L, tokens[1].Position.ByteOffset);
+    }
+
+    [Fact]
     public async Task EmptyInput_NoTokens()
     {
         using var lexer = PipeBytesLexer.FromString("", ArithTable(), cancellationToken: TestContext.Current.CancellationToken);

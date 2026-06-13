@@ -91,6 +91,31 @@ public class BytesLexerTests
     }
 
     [Fact]
+    public void InitialLine_ShiftsLineBase()
+    {
+        // A lexer started at a high line base (mimicking a synthetic-header
+        // sub-lexer in a reserved line band) reports every token at or past
+        // that base; column and byte offset are unaffected, and a newline
+        // bumps the line relative to the base.
+        const int Base = 1 << 20;
+        using var lexer = BytesLexer.FromString("12\n34", ArithTable(), initialLine: Base);
+        var tokens = Collect(lexer);
+        Assert.Equal(2, tokens.Count);
+        Assert.Equal(Base, tokens[0].Position.Line);
+        Assert.Equal(1, tokens[0].Position.Column);
+        Assert.Equal(Base + 1, tokens[1].Position.Line);
+        Assert.Equal(1, tokens[1].Position.Column);
+        Assert.Equal(3L, tokens[1].Position.ByteOffset);
+    }
+
+    [Fact]
+    public void InitialLine_BelowOne_Throws()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => BytesLexer.FromString("1", ArithTable(), initialLine: 0));
+    }
+
+    [Fact]
     public void Utf8MultiByte_DefaultIsCodepointColumn()
     {
         // Default ColumnMode is Codepoints — "𝟏" (U+1D7CF) is one codepoint

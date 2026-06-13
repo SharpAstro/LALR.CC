@@ -45,14 +45,22 @@ public sealed class PipeBytesLexer : IAsyncIterator<Item>
         public LexRule[] Rules { get; } = rules;
     }
 
+    /// <param name="initialLine">
+    /// 1-based line number the first token reports (default 1). Mirrors
+    /// <see cref="BytesLexer"/> — lets a caller lex a nested buffer in a reserved line
+    /// band so its tokens are distinguishable by position. Trailing parameter to stay
+    /// source-compatible with existing positional callers passing <paramref name="cancellationToken"/>.
+    /// </param>
     public PipeBytesLexer(PipeReader reader, IReadOnlyDictionary<string, LexRule[]> patternTable,
         LexerErrorMode errorMode = LexerErrorMode.Throw,
         int errorSymbolId = -1,
         ColumnMode columnMode = ColumnMode.Codepoints,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int initialLine = 1)
     {
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(patternTable);
+        ArgumentOutOfRangeException.ThrowIfLessThan(initialLine, 1);
         if (!patternTable.ContainsKey(RootState))
         {
             throw new ArgumentException($"pattern table must contain a '{RootState}' state", nameof(patternTable));
@@ -69,6 +77,7 @@ public sealed class PipeBytesLexer : IAsyncIterator<Item>
         _errorMode = errorMode;
         _errorSymbolId = errorSymbolId;
         _columnMode = columnMode;
+        _line = initialLine;
         _states = new Stack<string>([RootState]);
         _compiledStates = new Dictionary<string, CompiledState>(patternTable.Count, StringComparer.Ordinal);
         foreach (var kv in patternTable)
@@ -92,25 +101,29 @@ public sealed class PipeBytesLexer : IAsyncIterator<Item>
     }
 
     /// <summary>Convenience factory that wraps a UTF-8 byte buffer.</summary>
+    /// <param name="initialLine">1-based starting line for the first token (default 1); see the constructor.</param>
     public static PipeBytesLexer FromBytes(ReadOnlyMemory<byte> utf8Bytes, IReadOnlyDictionary<string, LexRule[]> patternTable,
         LexerErrorMode errorMode = LexerErrorMode.Throw, int errorSymbolId = -1,
         ColumnMode columnMode = ColumnMode.Codepoints,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int initialLine = 1)
     {
         var reader = PipeReader.Create(new ReadOnlySequence<byte>(utf8Bytes));
-        return new PipeBytesLexer(reader, patternTable, errorMode, errorSymbolId, columnMode, cancellationToken);
+        return new PipeBytesLexer(reader, patternTable, errorMode, errorSymbolId, columnMode, cancellationToken, initialLine);
     }
 
     /// <summary>Convenience factory that wraps a UTF-8 stream via Pipelines.</summary>
+    /// <param name="initialLine">1-based starting line for the first token (default 1); see the constructor.</param>
     public static PipeBytesLexer FromStream(Stream stream, IReadOnlyDictionary<string, LexRule[]> patternTable,
         bool leaveOpen = false,
         LexerErrorMode errorMode = LexerErrorMode.Throw, int errorSymbolId = -1,
         ColumnMode columnMode = ColumnMode.Codepoints,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int initialLine = 1)
     {
         ArgumentNullException.ThrowIfNull(stream);
         var reader = PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: leaveOpen));
-        return new PipeBytesLexer(reader, patternTable, errorMode, errorSymbolId, columnMode, cancellationToken);
+        return new PipeBytesLexer(reader, patternTable, errorMode, errorSymbolId, columnMode, cancellationToken, initialLine);
     }
 
     /// <summary>
@@ -120,10 +133,11 @@ public sealed class PipeBytesLexer : IAsyncIterator<Item>
     public static PipeBytesLexer FromString(string text, IReadOnlyDictionary<string, LexRule[]> patternTable,
         LexerErrorMode errorMode = LexerErrorMode.Throw, int errorSymbolId = -1,
         ColumnMode columnMode = ColumnMode.Codepoints,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int initialLine = 1)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return FromBytes(Encoding.UTF8.GetBytes(text), patternTable, errorMode, errorSymbolId, columnMode, cancellationToken);
+        return FromBytes(Encoding.UTF8.GetBytes(text), patternTable, errorMode, errorSymbolId, columnMode, cancellationToken, initialLine);
     }
 
     public Task<Item> CurrentAsync()

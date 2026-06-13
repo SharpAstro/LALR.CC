@@ -40,12 +40,20 @@ public sealed class BytesLexer : ISyncIterator<Item>
         public LexRule[] Rules { get; } = rules;
     }
 
+    /// <param name="initialLine">
+    /// 1-based line number the first token reports (default 1). Lets a caller lex a
+    /// nested buffer in a reserved line band — e.g. a synthetic-header sub-lexer that
+    /// wants its tokens distinguishable by position from the main translation unit's.
+    /// Column and byte offset still start at 1 and 0; only the line base shifts.
+    /// </param>
     public BytesLexer(ReadOnlyMemory<byte> bytes, IReadOnlyDictionary<string, LexRule[]> patternTable,
         LexerErrorMode errorMode = LexerErrorMode.Throw,
         int errorSymbolId = -1,
-        ColumnMode columnMode = ColumnMode.Codepoints)
+        ColumnMode columnMode = ColumnMode.Codepoints,
+        int initialLine = 1)
     {
         ArgumentNullException.ThrowIfNull(patternTable);
+        ArgumentOutOfRangeException.ThrowIfLessThan(initialLine, 1);
         if (!patternTable.ContainsKey(PipeBytesLexer.RootState))
         {
             throw new ArgumentException(
@@ -63,6 +71,7 @@ public sealed class BytesLexer : ISyncIterator<Item>
         _errorMode = errorMode;
         _errorSymbolId = errorSymbolId;
         _columnMode = columnMode;
+        _line = initialLine;
         _states = new Stack<string>([PipeBytesLexer.RootState]);
         _compiledStates = new Dictionary<string, CompiledState>(patternTable.Count, StringComparer.Ordinal);
         // Same compilation pass as PipeBytesLexer — first-rule-wins falls out of
@@ -87,12 +96,13 @@ public sealed class BytesLexer : ISyncIterator<Item>
     }
 
     /// <summary>Convenience: encode a UTF-16 string to UTF-8 once, then lex synchronously.</summary>
+    /// <param name="initialLine">1-based starting line for the first token (default 1); see the constructor.</param>
     public static BytesLexer FromString(string text, IReadOnlyDictionary<string, LexRule[]> patternTable,
         LexerErrorMode errorMode = LexerErrorMode.Throw, int errorSymbolId = -1,
-        ColumnMode columnMode = ColumnMode.Codepoints)
+        ColumnMode columnMode = ColumnMode.Codepoints, int initialLine = 1)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return new BytesLexer(Encoding.UTF8.GetBytes(text), patternTable, errorMode, errorSymbolId, columnMode);
+        return new BytesLexer(Encoding.UTF8.GetBytes(text), patternTable, errorMode, errorSymbolId, columnMode, initialLine);
     }
 
     public Item Current
