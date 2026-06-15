@@ -1,0 +1,356 @@
+# zig.lalr.yaml — hand LALR(1) translation of Zig's PEG (see grammar.peg, pinned
+# to ziglang/zig 3391ad7a; oracle = zig 0.17.0-dev.667).
+#
+# This is SLICE 1 of the M0 grammar spike: prove that the C-shaped value/type core
+# of Zig generates clean LALR(1) tables under LALR.CC. The interesting risk it
+# exercises is Zig's UNIFIED expression/type grammar — `*`, `&`, `[`, `!`, `.` are
+# each both an operand-position (type/prefix) token and an after-operand (binary/
+# postfix) token, and LALR must separate those by parser state rather than by PEG
+# ordered choice. The frozen grammar.peg is the source of truth; port upstream
+# deltas through it.
+#
+# Precedence cascade (lowest -> highest), faithful to grammar.peg:
+#   Expr -> BoolOr(or) -> BoolAnd(and) -> Compare(== != < > <= >=, NON-assoc)
+#        -> Bitwise(& ^ |) -> BitShift(<< >>) -> Add(+ -) -> Mul(* / %)
+#        -> Prefix(! - ~ & try, right-assoc)  [value-level prefix]
+#        -> Type(? * []T [N]T, right-assoc)   [type-level prefix; types ARE values]
+#        -> ErrUnion(E ! T) -> Suffix(. .* .? [idx] call, left-assoc) -> Primary
+#
+# DEFERRED to later slices (documented, not silent — grammar.peg has them):
+#   - control-flow-as-expression (if/for/while/switch exprs) and the `!ExprSuffix`
+#     negative-lookahead predicates that gate them (the hard PEG-ism);
+#   - labeled blocks/loops (`label:`), payloads (`|x|`), switch, for-ranges;
+#   - container decls (struct/enum/union/opaque), error sets, init lists `.{...}`;
+#   - comptime/defer/errdefer/nosuspend, asm, destructuring assignment, anytype;
+#   - full FnProto modifiers (export/extern/inline/callconv/align/linksection/...);
+#   - hex/oct/bin/underscored integers, char literals, multiline strings, builtins
+#     beyond `@name(args)`, `orelse`/`catch`, the wrapping/saturating operators.
+
+symbols:
+  # --- non-terminals (start = Root at index 0) ---
+  - Root         # 0  translation unit (start)
+  - Decls        # 1  top-level declaration list
+  - Decl         # 2  one top-level declaration
+  - FnDef        # 3  function definition
+  - Params       # 4  parameter list
+  - Param        # 5  one parameter (name: type)
+  - VarDecl      # 6  const/var declaration (top-level or statement)
+  - Block        # 7  { statements }
+  - Stmts        # 8  statement list
+  - Stmt         # 9  one statement
+  - Type         # 10 TypeExpr: PrefixTypeOp* over ErrUnion (types are values)
+  - Expr         # 11 expression (top of the cascade)
+  - BoolOr       # 12 `or`
+  - BoolAnd      # 13 `and`
+  - Compare      # 14 == != < > <= >=  (non-associative: at most one)
+  - Bitwise      # 15 & ^ |
+  - BitShift     # 16 << >>
+  - Add          # 17 + -
+  - Mul          # 18 * / %
+  - Prefix       # 19 value prefix ops: ! - ~ & try
+  - ErrUnion     # 20 E ! T error-union type
+  - Suffix       # 21 postfix: .field .* .? [idx] (args)
+  - Primary      # 22 atoms
+  - ArgList      # 23 call-argument list
+  # --- terminals: keywords ---
+  - 'fn'         # 24
+  - 'pub'        # 25
+  - 'const'      # 26
+  - 'var'        # 27
+  - 'return'     # 28
+  - 'if'         # 29
+  - 'else'       # 30
+  - 'while'      # 31
+  - 'and'        # 32
+  - 'or'         # 33
+  - 'try'        # 34
+  # --- terminals: punctuation ---
+  - '('          # 35
+  - ')'          # 36
+  - '{'          # 37
+  - '}'          # 38
+  - '['          # 39
+  - ']'          # 40
+  - ';'          # 41
+  - ','          # 42
+  - ':'          # 43
+  - '='          # 44
+  # --- terminals: binary operators ---
+  - '=='         # 45
+  - '!='         # 46
+  - '<'          # 47
+  - '>'          # 48
+  - '<='         # 49
+  - '>='         # 50
+  - '&'          # 51  (also value prefix: address-of)
+  - '^'          # 52
+  - '|'          # 53
+  - '<<'         # 54
+  - '>>'         # 55
+  - '+'          # 56
+  - '-'          # 57  (also value prefix: negate)
+  - '*'          # 58  (also type prefix: pointer)
+  - '/'          # 59
+  - '%'          # 60
+  # --- terminals: prefix / type / postfix ---
+  - '!'          # 61  (value prefix: not; also error-union infix E!T)
+  - '~'          # 62  (value prefix: bit-not)
+  - '?'          # 63  (type prefix: optional)
+  - '.'          # 64  (postfix field / enum literal)
+  - '.*'         # 65  (postfix pointer deref)
+  - '.?'         # 66  (postfix optional unwrap)
+  # --- terminals: atoms ---
+  - IDENT        # 67
+  - INTEGER      # 68
+  - FLOAT        # 69
+  - STRING       # 70
+  - BUILTIN      # 71  @name
+  # --- terminals: ignored ---
+  - WS           # 72
+  - LINE_COMMENT # 73
+
+productions:
+  # Start: single non-terminal, trimmed at parse time.
+  - derivation: none
+    rules:
+      - { lhs: Root, rhs: [Decls] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Decls, rhs: [Decl, Decls], action: declsCons }
+      - { lhs: Decls, rhs: [Decl],         action: declsOne }
+
+  - derivation: none
+    rules:
+      - { lhs: Decl, rhs: [FnDef] }
+      - { lhs: Decl, rhs: ['pub', FnDef],  action: pubFn }
+      - { lhs: Decl, rhs: [VarDecl] }
+      - { lhs: Decl, rhs: ['pub', VarDecl], action: pubVar }
+
+  # FnProto (subset): `fn name(params) RetType Block`. RetType may carry the
+  # inferred-error-set leading `!` (`fn f() !void`), distinct from ErrUnion's
+  # infix `!` by lookahead (leading `!` appears immediately after `)`).
+  - derivation: none
+    rules:
+      - { lhs: FnDef, rhs: ['fn', IDENT, '(', Params, ')', Type, Block],       action: fnDef }
+      - { lhs: FnDef, rhs: ['fn', IDENT, '(', ')', Type, Block],               action: fnDefNoArgs }
+      - { lhs: FnDef, rhs: ['fn', IDENT, '(', Params, ')', '!', Type, Block],  action: fnDefErr }
+      - { lhs: FnDef, rhs: ['fn', IDENT, '(', ')', '!', Type, Block],          action: fnDefNoArgsErr }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Params, rhs: [Param, ',', Params], action: paramsCons }
+      - { lhs: Params, rhs: [Param],               action: paramsOne }
+
+  - derivation: none
+    rules:
+      - { lhs: Param, rhs: [IDENT, ':', Type], action: param }
+
+  # const/var, optionally type-annotated. Reused at top level (Decl) and inside
+  # blocks (Stmt).
+  - derivation: none
+    rules:
+      - { lhs: VarDecl, rhs: ['const', IDENT, '=', Expr, ';'],            action: constDecl }
+      - { lhs: VarDecl, rhs: ['const', IDENT, ':', Type, '=', Expr, ';'], action: constDeclTyped }
+      - { lhs: VarDecl, rhs: ['var', IDENT, '=', Expr, ';'],             action: varDecl }
+      - { lhs: VarDecl, rhs: ['var', IDENT, ':', Type, '=', Expr, ';'],  action: varDeclTyped }
+
+  - derivation: none
+    rules:
+      - { lhs: Block, rhs: ['{', Stmts, '}'], action: block }
+      - { lhs: Block, rhs: ['{', '}'],         action: blockEmpty }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Stmts, rhs: [Stmt, Stmts], action: stmtsCons }
+      - { lhs: Stmts, rhs: [Stmt],         action: stmtsOne }
+
+  # Dangling-else: rightmost group so `else` shifts onto the nearest open `if`.
+  - derivation: rightmost
+    rules:
+      - { lhs: Stmt, rhs: ['if', '(', Expr, ')', Stmt],                 action: stmtIf }
+      - { lhs: Stmt, rhs: ['if', '(', Expr, ')', Stmt, 'else', Stmt],   action: stmtIfElse }
+
+  - derivation: none
+    rules:
+      - { lhs: Stmt, rhs: ['while', '(', Expr, ')', Stmt], action: stmtWhile }
+      - { lhs: Stmt, rhs: ['return', Expr, ';'],            action: stmtReturn }
+      - { lhs: Stmt, rhs: ['return', ';'],                   action: stmtReturnVoid }
+      - { lhs: Stmt, rhs: [VarDecl] }
+      - { lhs: Stmt, rhs: [Expr, '=', Expr, ';'],            action: stmtAssign }
+      - { lhs: Stmt, rhs: [Expr, ';'],                        action: stmtExpr }
+      - { lhs: Stmt, rhs: [Block] }
+
+  # ===== expression cascade =====
+  - derivation: none
+    rules:
+      - { lhs: Expr, rhs: [BoolOr] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: BoolOr, rhs: [BoolOr, 'or', BoolAnd], action: boolOr }
+      - { lhs: BoolOr, rhs: [BoolAnd] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: BoolAnd, rhs: [BoolAnd, 'and', Compare], action: boolAnd }
+      - { lhs: BoolAnd, rhs: [Compare] }
+
+  # Compare is non-associative (PEG: `BitwiseExpr (CompareOp BitwiseExpr)?`) — no
+  # self-recursion, so `a < b < c` is a parse error, matching Zig.
+  - derivation: none
+    rules:
+      - { lhs: Compare, rhs: [Bitwise, '==', Bitwise], action: cmpEq }
+      - { lhs: Compare, rhs: [Bitwise, '!=', Bitwise], action: cmpNe }
+      - { lhs: Compare, rhs: [Bitwise, '<', Bitwise],  action: cmpLt }
+      - { lhs: Compare, rhs: [Bitwise, '>', Bitwise],  action: cmpGt }
+      - { lhs: Compare, rhs: [Bitwise, '<=', Bitwise], action: cmpLe }
+      - { lhs: Compare, rhs: [Bitwise, '>=', Bitwise], action: cmpGe }
+      - { lhs: Compare, rhs: [Bitwise] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Bitwise, rhs: [Bitwise, '&', BitShift], action: bitAnd }
+      - { lhs: Bitwise, rhs: [Bitwise, '^', BitShift], action: bitXor }
+      - { lhs: Bitwise, rhs: [Bitwise, '|', BitShift], action: bitOr }
+      - { lhs: Bitwise, rhs: [BitShift] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: BitShift, rhs: [BitShift, '<<', Add], action: shl }
+      - { lhs: BitShift, rhs: [BitShift, '>>', Add], action: shr }
+      - { lhs: BitShift, rhs: [Add] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Add, rhs: [Add, '+', Mul], action: add }
+      - { lhs: Add, rhs: [Add, '-', Mul], action: sub }
+      - { lhs: Add, rhs: [Mul] }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: Mul, rhs: [Mul, '*', Prefix], action: mul }
+      - { lhs: Mul, rhs: [Mul, '/', Prefix], action: divOp }
+      - { lhs: Mul, rhs: [Mul, '%', Prefix], action: modOp }
+      - { lhs: Mul, rhs: [Prefix] }
+
+  # Value-level prefix ops (right-assoc). Below Mul, above the type-prefix level.
+  - derivation: rightmost
+    rules:
+      - { lhs: Prefix, rhs: ['!', Prefix],  action: preNot }
+      - { lhs: Prefix, rhs: ['-', Prefix],  action: preNeg }
+      - { lhs: Prefix, rhs: ['~', Prefix],  action: preBitNot }
+      - { lhs: Prefix, rhs: ['&', Prefix],  action: preAddrOf }
+      - { lhs: Prefix, rhs: ['try', Prefix], action: preTry }
+      - { lhs: Prefix, rhs: [Type] }
+
+  # Type-level prefix ops (right-assoc): `?T`, `*T`, `[]T`, `[N]T`. These sit at
+  # operand position; `*`/`&`/`[` here are the SAME tokens as binary mul / bitwise-
+  # and / postfix-index but reached in a different parser state. This is the core
+  # thing the spike validates.
+  - derivation: rightmost
+    rules:
+      - { lhs: Type, rhs: ['?', Type],            action: tyOptional }
+      - { lhs: Type, rhs: ['*', Type],            action: tyPointer }
+      - { lhs: Type, rhs: ['[', ']', Type],       action: tySlice }
+      - { lhs: Type, rhs: ['[', Expr, ']', Type], action: tyArray }
+      - { lhs: Type, rhs: [ErrUnion] }
+
+  - derivation: none
+    rules:
+      - { lhs: ErrUnion, rhs: [Suffix, '!', Type], action: errUnion }
+      - { lhs: ErrUnion, rhs: [Suffix] }
+
+  # Postfix chain (left-assoc): field access, deref, optional-unwrap, index, call.
+  - derivation: leftmost
+    rules:
+      - { lhs: Suffix, rhs: [Suffix, '.', IDENT],      action: field }
+      - { lhs: Suffix, rhs: [Suffix, '.*'],             action: deref }
+      - { lhs: Suffix, rhs: [Suffix, '.?'],             action: unwrap }
+      - { lhs: Suffix, rhs: [Suffix, '[', Expr, ']'],  action: index }
+      - { lhs: Suffix, rhs: [Suffix, '(', ArgList, ')'], action: callArgs }
+      - { lhs: Suffix, rhs: [Suffix, '(', ')'],          action: callNoArgs }
+      - { lhs: Suffix, rhs: [Primary] }
+
+  - derivation: none
+    rules:
+      - { lhs: Primary, rhs: [IDENT],               action: ident }
+      - { lhs: Primary, rhs: [INTEGER],             action: intLit }
+      - { lhs: Primary, rhs: [FLOAT],               action: floatLit }
+      - { lhs: Primary, rhs: [STRING],              action: strLit }
+      - { lhs: Primary, rhs: ['(', Expr, ')'],      action: grouped }
+      - { lhs: Primary, rhs: [BUILTIN, '(', ArgList, ')'], action: builtinCall }
+      - { lhs: Primary, rhs: [BUILTIN, '(', ')'],           action: builtinCallNoArgs }
+      - { lhs: Primary, rhs: ['.', IDENT],          action: enumLit }
+
+  - derivation: leftmost
+    rules:
+      - { lhs: ArgList, rhs: [Expr, ',', ArgList], action: argsCons }
+      - { lhs: ArgList, rhs: [Expr],                action: argsOne }
+
+lexer:
+  root:
+    # Comments first. Zig line comments `//...` (incl. `///` doc comments) — ignored
+    # for the spike. Must precede the `/` operator so the slash isn't eaten first.
+    - { symbol: LINE_COMMENT, match: '//[^\n]*', action: ignore }
+
+    # Keywords. First-rule-wins on ties with IDENT; longest-match means `fnord`
+    # lexes as IDENT (5 chars) not `fn`+`ord`.
+    - { symbol: 'fn',     match: 'fn' }
+    - { symbol: 'pub',    match: 'pub' }
+    - { symbol: 'const',  match: 'const' }
+    - { symbol: 'var',    match: 'var' }
+    - { symbol: 'return', match: 'return' }
+    - { symbol: 'if',     match: 'if' }
+    - { symbol: 'else',   match: 'else' }
+    - { symbol: 'while',  match: 'while' }
+    - { symbol: 'and',    match: 'and' }
+    - { symbol: 'or',     match: 'or' }
+    - { symbol: 'try',    match: 'try' }
+
+    # Multi-char operators (longest-match handles overlaps; listed first for clarity).
+    - { symbol: '==', match: '==' }
+    - { symbol: '!=', match: '!=' }
+    - { symbol: '<=', match: '<=' }
+    - { symbol: '>=', match: '>=' }
+    - { symbol: '<<', match: '<<' }
+    - { symbol: '>>', match: '>>' }
+    - { symbol: '.*', match: '\.\*' }
+    - { symbol: '.?', match: '\.\?' }
+
+    # Single-char operators / punctuation.
+    - { symbol: '(', match: '\(' }
+    - { symbol: ')', match: '\)' }
+    - { symbol: '{', match: '\{' }
+    - { symbol: '}', match: '\}' }
+    - { symbol: '[', match: '\[' }
+    - { symbol: ']', match: '\]' }
+    - { symbol: ';', match: ';' }
+    - { symbol: ',', match: ',' }
+    - { symbol: ':', match: ':' }
+    - { symbol: '=', match: '=' }
+    - { symbol: '<', match: '<' }
+    - { symbol: '>', match: '>' }
+    - { symbol: '&', match: '&' }
+    - { symbol: '^', match: '\^' }
+    - { symbol: '|', match: '\|' }
+    - { symbol: '+', match: '\+' }
+    - { symbol: '-', match: '\-' }
+    - { symbol: '*', match: '\*' }
+    - { symbol: '/', match: '/' }
+    - { symbol: '%', match: '%' }
+    - { symbol: '!', match: '!' }
+    - { symbol: '~', match: '~' }
+    - { symbol: '?', match: '\?' }
+    - { symbol: '.', match: '\.' }
+
+    # Atoms. FLOAT before INTEGER (longest-match picks float for `1.5`). Builtin
+    # `@name` before IDENT. Slice-1 integers are decimal-only.
+    - { symbol: BUILTIN, match: '@[a-zA-Z_][a-zA-Z_0-9]*' }
+    - { symbol: STRING,  match: '"[^"]*"' }
+    - { symbol: FLOAT,   match: '[0-9]+\.[0-9]+([eE][+\-]?[0-9]+)?' }
+    - { symbol: INTEGER, match: '[0-9]+' }
+    - { symbol: IDENT,   match: '[a-zA-Z_][a-zA-Z_0-9]*' }
+
+    # Whitespace (incl. newlines) — ignored.
+    - { symbol: WS, match: '[ \t\r\n]+', action: ignore }
