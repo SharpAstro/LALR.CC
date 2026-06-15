@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Zig-frontend grammar spike (the M0 grammar spike from the dotcc Zig plan).
+    Purpose: hand-translate Zig's official PEG (frozen in grammar.peg, pinned to
+    ziglang/zig 3391ad7a) into an LALR(1) YAML grammar and let the LALR.CC source
+    generator BUILD it — an unresolved shift/reduce or reduce/reduce surfaces as a
+    build-time GrammarConflictException, so `dotnet build` IS the conflict
+    instrument. No emitter/visitor is implemented here; we only validate that the
+    grammar generates clean LALR(1) tables.
+
+    Same csproj shape as examples/CMinus: in-tree ProjectReference to the runtime +
+    source generator (as Analyzer) + YamlDotNet feeding the analyzer host.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ZigSpike</RootNamespace>
+    <AssemblyName>Examples.Zig</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\LALR.CC\LALR.CC.csproj" />
+    <ProjectReference Include="..\..\LALR.CC.SourceGenerators\LALR.CC.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="YamlDotNet" Version="17.1.0" GeneratePathProperty="true" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Analyzer Include="$(PkgYamlDotNet)\lib\netstandard2.0\YamlDotNet.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- zig.lalr.yaml -> partial class Zig in namespace ZigSpike. Generator emits
+         schema, AST records, IVisitor + the BuildParser/BuildLexer helpers. -->
+    <AdditionalFiles Include="zig.lalr.yaml" />
+  </ItemGroup>
+
+</Project>
