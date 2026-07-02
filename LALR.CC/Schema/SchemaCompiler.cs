@@ -86,7 +86,7 @@ public static class SchemaCompiler
                 if (!IsKnownConditionalRole(role))
                 {
                     throw new SchemaCompilationException(
-                        $"preprocessor.conditionals['{role}']: unknown role; expected one of if, ifdef, ifndef, else, elif, endif");
+                        $"preprocessor.conditionals['{role}']: unknown role; expected one of if, ifdef, ifndef, else, elif, elifdef, elifndef, endif");
                 }
                 if (string.IsNullOrEmpty(symbol))
                 {
@@ -104,7 +104,7 @@ public static class SchemaCompiler
 
     private static bool IsKnownConditionalRole(string role) => role switch
     {
-        "if" or "ifdef" or "ifndef" or "else" or "elif" or "endif" => true,
+        "if" or "ifdef" or "ifndef" or "else" or "elif" or "elifdef" or "elifndef" or "endif" => true,
         _ => false,
     };
 

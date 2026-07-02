@@ -206,6 +206,25 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
             ElifBranch(branch);
             return true;
         }
+        // #elifdef NAME / #elifndef NAME (C23) — the #elif arm-selection rule
+        // (no prior arm emitted, outer not suppressing) with #ifdef/#ifndef's
+        // defined-name test in place of the expression evaluation.
+        if ((c.ElifDefSymbol >= 0 && id == c.ElifDefSymbol)
+            || (c.ElifNDefSymbol >= 0 && id == c.ElifNDefSymbol))
+        {
+            var args = CollectSameLineArgs(token.Position.Line);
+            var top = _branchStack.Peek();
+            var outerEmitting = _falseDepth - (top.Emitting ? 0 : 1) == 0;
+            var branch = false;
+            if (!top.AnyEmittedYet && outerEmitting && args.Count > 0)
+            {
+                var name = args[0].Content as string;
+                var defined = !string.IsNullOrEmpty(name) && c.IsDefined(name);
+                branch = id == c.ElifDefSymbol ? defined : !string.IsNullOrEmpty(name) && !defined;
+            }
+            ElifBranch(branch);
+            return true;
+        }
         if (id == c.ElseSymbol)
         {
             // Drop any same-line args (real C: #else takes none).

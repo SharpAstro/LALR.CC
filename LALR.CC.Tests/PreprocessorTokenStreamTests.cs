@@ -25,6 +25,8 @@ public class PreprocessorTokenStreamTests
     private const int IfNDefSym = 12;
     private const int ElseSym = 13;
     private const int EndIfSym = 14;
+    private const int ElifDefSym = 15;
+    private const int ElifNDefSym = 16;
 
     private static Item Tok(int id, string content, int line) =>
         new(id, content, new SourcePosition(line, 1, 0));
@@ -258,7 +260,8 @@ public class PreprocessorTokenStreamTests
     /// symbol-id constants and a backing macro set for <c>IsDefined</c>.
     /// </summary>
     private static PreprocessorConditionals Conditionals(HashSet<string> defined) =>
-        new(IfSym, IfDefSym, IfNDefSym, ElseSym, EndIfSym, defined.Contains);
+        new(IfSym, IfDefSym, IfNDefSym, ElseSym, EndIfSym, defined.Contains,
+            elifDefSymbol: ElifDefSym, elifNDefSymbol: ElifNDefSym);
 
     [Fact]
     public void Ifdef_WhenDefined_EmitsBranch()
@@ -447,5 +450,72 @@ public class PreprocessorTokenStreamTests
         Assert.Equal(2, seen.Count);
         Assert.Equal("a", seen[0].Content);
         Assert.Equal("c", seen[1].Content);
+    }
+
+    [Fact]
+    public void Elifdef_SelectsArm_WhenDefinedAndNoPriorArmEmitted()
+    {
+        // #ifdef X (false) / a / #elifdef Y (defined) / b / #else / c / #endif
+        // → the elifdef arm wins; the else is locked off.
+        var inner = new ListIterator([
+            Tok(IfDefSym, "#ifdef", 1), Tok(IdSym, "X", 1),
+            Tok(IdSym, "a", 2),
+            Tok(ElifDefSym, "#elifdef", 3), Tok(IdSym, "Y", 3),
+            Tok(IdSym, "b", 4),
+            Tok(ElseSym, "#else", 5),
+            Tok(IdSym, "c", 6),
+            Tok(EndIfSym, "#endif", 7),
+        ]);
+        using var pp = new PreprocessorTokenStream(
+            inner,
+            new Dictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>>(),
+            null,
+            Conditionals(["Y"]));
+        var seen = Drain(pp);
+        Assert.Single(seen);
+        Assert.Equal("b", seen[0].Content);
+    }
+
+    [Fact]
+    public void Elifndef_SelectsArm_WhenNotDefined()
+    {
+        // #ifdef X (false) / a / #elifndef Z (Z undefined → true) / b / #endif
+        var inner = new ListIterator([
+            Tok(IfDefSym, "#ifdef", 1), Tok(IdSym, "X", 1),
+            Tok(IdSym, "a", 2),
+            Tok(ElifNDefSym, "#elifndef", 3), Tok(IdSym, "Z", 3),
+            Tok(IdSym, "b", 4),
+            Tok(EndIfSym, "#endif", 5),
+        ]);
+        using var pp = new PreprocessorTokenStream(
+            inner,
+            new Dictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>>(),
+            null,
+            Conditionals([]));
+        var seen = Drain(pp);
+        Assert.Single(seen);
+        Assert.Equal("b", seen[0].Content);
+    }
+
+    [Fact]
+    public void Elifdef_LockedOut_WhenPriorArmEmitted()
+    {
+        // #ifdef X (true) / a / #elifdef Y (defined, but the chain already
+        // emitted) / b / #endif → only a; the arm-selection lock matches #elif.
+        var inner = new ListIterator([
+            Tok(IfDefSym, "#ifdef", 1), Tok(IdSym, "X", 1),
+            Tok(IdSym, "a", 2),
+            Tok(ElifDefSym, "#elifdef", 3), Tok(IdSym, "Y", 3),
+            Tok(IdSym, "b", 4),
+            Tok(EndIfSym, "#endif", 5),
+        ]);
+        using var pp = new PreprocessorTokenStream(
+            inner,
+            new Dictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>>(),
+            null,
+            Conditionals(["X", "Y"]));
+        var seen = Drain(pp);
+        Assert.Single(seen);
+        Assert.Equal("a", seen[0].Content);
     }
 }

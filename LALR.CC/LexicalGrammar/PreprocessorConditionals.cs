@@ -6,9 +6,10 @@ namespace LALR.CC.LexicalGrammar;
 /// Configures the conditional-compilation engine inside
 /// <see cref="PreprocessorTokenStream"/>. Built at codegen time by the
 /// source generator from the YAML's <c>preprocessor.conditionals</c> block:
-/// each role (if / ifdef / ifndef / else / endif) gets its lexer-emitted
-/// directive symbol id, and <see cref="IsDefined"/> bridges back to the
-/// user's macro table so the engine can evaluate <c>#ifdef NAME</c>.
+/// each role (if / ifdef / ifndef / else / elif / elifdef / elifndef / endif)
+/// gets its lexer-emitted directive symbol id, and <see cref="IsDefined"/>
+/// bridges back to the user's macro table so the engine can evaluate
+/// <c>#ifdef NAME</c> (and the C23 <c>#elifdef</c>/<c>#elifndef</c> sugar).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -41,7 +42,9 @@ public readonly struct PreprocessorConditionals
         int elseSymbol,
         int endIfSymbol,
         Func<string, bool> isDefined,
-        int elifSymbol = -1)
+        int elifSymbol = -1,
+        int elifDefSymbol = -1,
+        int elifNDefSymbol = -1)
     {
         ArgumentNullException.ThrowIfNull(isDefined);
         IfSymbol = ifSymbol;
@@ -49,6 +52,8 @@ public readonly struct PreprocessorConditionals
         IfNDefSymbol = ifNDefSymbol;
         ElseSymbol = elseSymbol;
         ElifSymbol = elifSymbol;
+        ElifDefSymbol = elifDefSymbol;
+        ElifNDefSymbol = elifNDefSymbol;
         EndIfSymbol = endIfSymbol;
         IsDefined = isDefined;
     }
@@ -67,6 +72,14 @@ public readonly struct PreprocessorConditionals
 
     /// <summary>Lexer symbol id for <c>#elif</c>. <c>-1</c> when unbound.</summary>
     public int ElifSymbol { get; }
+
+    /// <summary>Lexer symbol id for <c>#elifdef</c> (C23 — <c>#elif defined(NAME)</c>
+    /// sugar). <c>-1</c> when unbound.</summary>
+    public int ElifDefSymbol { get; }
+
+    /// <summary>Lexer symbol id for <c>#elifndef</c> (C23 — <c>#elif !defined(NAME)</c>
+    /// sugar). <c>-1</c> when unbound.</summary>
+    public int ElifNDefSymbol { get; }
 
     /// <summary>Lexer symbol id for <c>#endif</c>. <c>-1</c> when unbound.</summary>
     public int EndIfSymbol { get; }

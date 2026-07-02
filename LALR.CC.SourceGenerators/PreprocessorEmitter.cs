@@ -126,6 +126,8 @@ internal static class PreprocessorEmitter
                 case "ifndef": block.IfNDefSymbol = id; break;
                 case "else": block.ElseSymbol = id; break;
                 case "elif": block.ElifSymbol = id; break;
+                case "elifdef": block.ElifDefSymbol = id; break;
+                case "elifndef": block.ElifNDefSymbol = id; break;
                 case "endif": block.EndIfSymbol = id; break;
             }
         }
@@ -215,7 +217,9 @@ internal static class PreprocessorEmitter
         sb.Append("elseSymbol: ").Append(conditionals.ElseSymbol).Append(", ");
         sb.Append("endIfSymbol: ").Append(conditionals.EndIfSymbol).AppendLine(",");
         sb.Append("            isDefined: impl.IsDefined,");
-        sb.Append(" elifSymbol: ").Append(conditionals.ElifSymbol).AppendLine(");");
+        sb.Append(" elifSymbol: ").Append(conditionals.ElifSymbol).Append(",");
+        sb.Append(" elifDefSymbol: ").Append(conditionals.ElifDefSymbol).Append(",");
+        sb.Append(" elifNDefSymbol: ").Append(conditionals.ElifNDefSymbol).AppendLine(");");
         sb.AppendLine("    }");
     }
 
@@ -244,8 +248,8 @@ internal static class PreprocessorEmitter
 
     /// <summary>
     /// Conditional-directive role resolution: each well-known role (if /
-    /// ifdef / ifndef / else / endif) gets a symbol id resolved at codegen
-    /// time. <c>-1</c> means the YAML didn't bind that role. <see cref="Any"/>
+    /// ifdef / ifndef / else / elif / elifdef / elifndef / endif) gets a
+    /// symbol id resolved at codegen time. <c>-1</c> means the YAML didn't bind that role. <see cref="Any"/>
     /// is true when at least one role is bound — drives whether the
     /// generator emits the IsDefined interface method, BuildConditionals
     /// helper, and the conditional-aware WrapPreprocessor call.
@@ -257,9 +261,12 @@ internal static class PreprocessorEmitter
         public int IfNDefSymbol { get; set; } = -1;
         public int ElseSymbol { get; set; } = -1;
         public int ElifSymbol { get; set; } = -1;
+        public int ElifDefSymbol { get; set; } = -1;
+        public int ElifNDefSymbol { get; set; } = -1;
         public int EndIfSymbol { get; set; } = -1;
         public bool Any => IfSymbol >= 0 || IfDefSymbol >= 0 || IfNDefSymbol >= 0
-            || ElseSymbol >= 0 || ElifSymbol >= 0 || EndIfSymbol >= 0;
+            || ElseSymbol >= 0 || ElifSymbol >= 0 || ElifDefSymbol >= 0
+            || ElifNDefSymbol >= 0 || EndIfSymbol >= 0;
     }
 
     private readonly struct DirectiveInfo
