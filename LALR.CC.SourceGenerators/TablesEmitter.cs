@@ -243,23 +243,62 @@ internal static class TablesEmitter
         sb.AppendLine("    /// <see cref=\"global::LALR.CC.ParserTableBuilder\"/>; the");
         sb.AppendLine("    /// consumer never runs that code, so the trimmer can drop it.");
         sb.AppendLine("    /// </summary>");
-        sb.Append("    public static readonly global::LALR.CC.ParseTable ParseTable = new global::LALR.CC.ParseTable(new global::LALR.CC.Action[")
-          .Append(states).Append(", ").Append(tokenCols).AppendLine("] {");
-
+        sb.AppendLine("    /// <remarks>");
+        sb.AppendLine("    /// The table is encoded as two flat, constant primitive arrays (the action");
+        sb.AppendLine("    /// type + its parameter, row-major over states × tokens) and rebuilt into the");
+        sb.AppendLine("    /// <c>Action[,]</c> by a small loop. This is deliberate, not incidental: a");
+        sb.AppendLine("    /// large <c>Action[,]</c> element-initialiser makes the C# compiler emit one");
+        sb.AppendLine("    /// temporary local per cell, and a big grammar's table (thousands of states ×");
+        sb.AppendLine("    /// hundreds of tokens = 10^5+ cells) overflows the Mono/WASM interpreter's");
+        sb.AppendLine("    /// 16-bit per-method frame — \"locals size too big\", which breaks the parser");
+        sb.AppendLine("    /// under Blazor/wasm even though NativeAOT and the desktop CLR cope. A");
+        sb.AppendLine("    /// constant primitive-array initialiser instead lowers to a single");
+        sb.AppendLine("    /// <c>RuntimeHelpers.InitializeArray</c> over a <c>.data</c> RVA blob (no");
+        sb.AppendLine("    /// per-cell locals), so the static-init frame stays tiny on every runtime.");
+        sb.AppendLine("    /// </remarks>");
+        // NOTE: the two backing arrays MUST be declared before the ParseTable field —
+        // C# runs static field initialisers in declaration order, and
+        // BuildParseTable() reads them, so ParseTable-first would see them still null.
+        sb.Append("    private static readonly byte[] _actionTypes = new byte[] { ");
         for (var s = 0; s < states; s++)
         {
-            sb.Append("        /* state ").Append(s).Append(" */ { ");
             for (var c = 0; c < tokenCols; c++)
             {
-                if (c > 0) sb.Append(", ");
-                var action = parseTable.Actions[s, c];
-                sb.Append("new(global::LALR.CC.ActionType.")
-                  .Append(action.ActionType).Append(", ").Append(action.ActionParameter).Append(")");
+                if (s != 0 || c != 0) sb.Append(", ");
+                sb.Append((int)parseTable.Actions[s, c].ActionType);
             }
-            sb.Append(" }");
-            sb.AppendLine(s == states - 1 ? "" : ",");
         }
-        sb.AppendLine("    });");
+        sb.AppendLine(" };");
+
+        sb.Append("    private static readonly int[] _actionParams = new int[] { ");
+        for (var s = 0; s < states; s++)
+        {
+            for (var c = 0; c < tokenCols; c++)
+            {
+                if (s != 0 || c != 0) sb.Append(", ");
+                sb.Append(parseTable.Actions[s, c].ActionParameter);
+            }
+        }
+        sb.AppendLine(" };");
+        sb.AppendLine();
+
+        sb.AppendLine("    public static readonly global::LALR.CC.ParseTable ParseTable = BuildParseTable();");
+        sb.AppendLine();
+
+        sb.AppendLine("    private static global::LALR.CC.ParseTable BuildParseTable()");
+        sb.AppendLine("    {");
+        sb.Append("        const int states = ").Append(states).AppendLine(";");
+        sb.Append("        const int tokens = ").Append(tokenCols).AppendLine(";");
+        sb.AppendLine("        var actions = new global::LALR.CC.Action[states, tokens];");
+        sb.AppendLine("        for (int s = 0, k = 0; s < states; s++)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            for (int c = 0; c < tokens; c++, k++)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                actions[s, c] = new global::LALR.CC.Action((global::LALR.CC.ActionType)_actionTypes[k], _actionParams[k]);");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine("        return new global::LALR.CC.ParseTable(actions);");
+        sb.AppendLine("    }");
         sb.AppendLine();
     }
 
