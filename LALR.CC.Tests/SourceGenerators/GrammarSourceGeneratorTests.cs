@@ -213,8 +213,15 @@ public class GrammarSourceGeneratorTests
         Assert.Contains("public static partial class Arithmetic", tablesSource);
         Assert.Contains("public static readonly global::LALR.CC.Grammar Definition", tablesSource);
         Assert.Contains("public static global::LALR.CC.Parser BuildParser()", tablesSource);
-        // Action[,] literal — at least one Shift action should appear (real parse table)
-        Assert.Contains("global::LALR.CC.ActionType.Shift", tablesSource);
+        // The parse table is emitted as two flat, constant primitive arrays rebuilt
+        // into the Action[,] by BuildParseTable() — the RVA-blob encoding that keeps
+        // the static-init frame small enough for the Mono/wasm interpreter (v4.5.0).
+        // The action-type array carries the raw enum bytes (Shift == 4), and the
+        // rebuild loop casts them back through ActionType.
+        Assert.Contains("private static readonly byte[] _actionTypes = new byte[]", tablesSource);
+        Assert.Contains("private static readonly int[] _actionParams = new int[]", tablesSource);
+        Assert.Contains("private static global::LALR.CC.ParseTable BuildParseTable()", tablesSource);
+        Assert.Contains("(global::LALR.CC.ActionType)_actionTypes[k]", tablesSource);
     }
 
     [Fact]
