@@ -336,6 +336,217 @@ public class Parser
     }
 
     /// <summary>
+    /// Resilient (error-recovering) variant of <see cref="ParseInput"/> for a grammar whose start
+    /// symbol is a <em>list</em> of top-level elements (e.g. <c>Decls → Decl …</c>). Parses as far as
+    /// it can; on a parse error it records the error, skips the offending element, and resynchronises
+    /// at the next element boundary instead of throwing — so the returned <see cref="ResilientParseResult.Tree"/>
+    /// contains exactly the well-formed elements and <see cref="ResilientParseResult.Errors"/> lists the
+    /// skipped ones. This is what a lazy/decl-driven consumer wants: only the elements it actually
+    /// references need to be well-formed. A clean input yields a tree identical to <see cref="ParseInput"/>
+    /// and an empty error list.
+    /// </summary>
+    /// <param name="tokenIterator">Item iterator, owned by the caller.</param>
+    /// <param name="syncTerminalIds">Terminal ids that start a top-level list element (the resync set —
+    /// e.g. the language's declaration-starting keywords). Recovery resumes only at one of these seen at
+    /// bracket-depth 0. End-of-input is always an implicit resync/termination point; it need not be listed.</param>
+    /// <param name="openBracketIds">Terminal ids that open a nesting level (<c>{ ( [</c>); used so a
+    /// sync terminal <em>inside</em> the broken element (a nested declaration) isn't mistaken for a boundary.</param>
+    /// <param name="closeBracketIds">Terminal ids that close a nesting level (<c>} ) ]</c>). A stray
+    /// closer at depth 0 clamps (never goes negative), tolerating the broken element's unmatched closers.</param>
+    /// <remarks>
+    /// Uses ONLY the parse table (<see cref="ParseTable.Actions"/>) and grammar — never the
+    /// table-builder — so it is safe on the pre-baked (source-generated) parser path where
+    /// <see cref="FirstSets"/> and friends are unavailable. Recovery is guaranteed to terminate:
+    /// each error either makes forward parse progress or discards at least one input token.
+    /// </remarks>
+    public ResilientParseResult ParseInputResilient(ISyncLAIterator<Item> tokenIterator,
+        IReadOnlySet<int> syncTerminalIds,
+        IReadOnlySet<int> openBracketIds,
+        IReadOnlySet<int> closeBracketIds,
+        Debug debugger = null,
+        bool trimReductions = true,
+        bool allowRewriting = true,
+        CancellationToken cancellationToken = default)
+    {
+        const int initState = 0;
+        var tokenStack = new Stack<Item>();
+        var state = initState;
+        var productions = Productions;
+        var nonterminals = NonTerminals;
+        var errors = new List<ParseErrorInfo>();
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var token = tokenIterator.LookAhead();
+            var action = _parseTable.Actions[state, token.ID + 1];
+            debugger?.DumpParsingState(state, tokenStack, token, action);
+
+            switch (action.ActionType)
+            {
+                case ActionType.Shift:
+                    state = action.ActionParameter;
+                    token.State = state;
+                    tokenStack.Push(token);
+                    tokenIterator.MoveNext();
+                    break;
+
+                case ActionType.Reduce:
+                    var nProduction = action.ActionParameter;
+                    var production = productions[nProduction];
+                    var nChildren = production.Right.Length;
+                    Item reduction;
+                    if (trimReductions && nChildren == 1
+                        && nonterminals.Contains(production.Right[0])
+                        && !production.HasRewriter)
+                    {
+                        var popped = tokenStack.Pop();
+                        reduction = new Item(production.Left, popped.Content, popped.Position);
+                    }
+                    else
+                    {
+                        var children = new Item[nChildren];
+                        for (var i = 0; i < nChildren; i++)
+                        {
+                            children[nChildren - i - 1] = tokenStack.Pop();
+                        }
+                        object rewrite = allowRewriting && production.HasRewriter
+                            ? production.Rewrite(children)
+                            : new Reduction(nProduction, children);
+                        var pos = nChildren > 0 ? children[0].Position : token.Position;
+                        reduction = new Item(production.Left, rewrite, pos);
+                    }
+                    var lastState = tokenStack.Count > 0 ? tokenStack.Peek().State : initState;
+                    state = _parseTable.Actions[lastState, production.Left + 1].ActionParameter;
+                    reduction.State = state;
+                    tokenStack.Push(reduction);
+                    if (tokenStack.Count == 1 && tokenStack.Peek().ID == 0)
+                    {
+                        return new ResilientParseResult(tokenStack.Pop(), errors);
+                    }
+                    break;
+
+                case ActionType.Error:
+                    // Capture the error (like the Throw path builds for the exception), then recover
+                    // instead of throwing: skip the broken element and resynchronise at a boundary.
+                    token.State = -(state + 1);
+                    var expected = ExpectedTerminalsAt(state);
+                    var message = ParseErrorException.FormatMessage(token, state, expected, _grammar);
+                    var skippedFrom = token.Position;
+                    var resyncState = Resync(tokenStack, tokenIterator,
+                        syncTerminalIds, openBracketIds, closeBracketIds, out var resumeToken);
+                    errors.Add(new ParseErrorInfo(token, state, expected, message, skippedFrom,
+                        resyncState >= 0 ? resumeToken.Position : SourcePosition.Unknown));
+                    if (resyncState < 0)
+                    {
+                        // Reached end-of-input with nothing on the stack able to continue: return the
+                        // best-effort partial tree (the accumulated prefix) plus the recorded errors.
+                        return new ResilientParseResult(BuildPartialTree(tokenStack), errors);
+                    }
+                    state = resyncState;
+                    break;
+
+                case ActionType.ErrorRR:
+                    throw new InvalidOperationException("Reduce-Reduce conflict in grammar: " + token);
+
+                case ActionType.ErrorSR:
+                    throw new InvalidOperationException("Shift-Reduce conflict in grammar: " + token);
+            }
+            debugger?.Flush();
+        }
+    }
+
+    /// <summary>
+    /// Panic-mode resynchronisation for <see cref="ParseInputResilient"/>. From the current
+    /// lookahead, discards input — tracking bracket depth via <paramref name="openBracketIds"/> /
+    /// <paramref name="closeBracketIds"/> (a stray closer clamps at 0) — until the lookahead is a
+    /// depth-0 <paramref name="syncTerminalIds"/> member (a top-level element boundary) or
+    /// end-of-input; then pops <paramref name="tokenStack"/> to the nearest state whose action on
+    /// that lookahead is a real Shift/Reduce and returns it, with the iterator left positioned at
+    /// (not past) <paramref name="resumeToken"/>. If a candidate boundary is a sync terminal that no
+    /// stacked state can act on, it is discarded and scanning continues. Returns -1 only at
+    /// end-of-input when no stacked state (down to the initial state) can continue — an
+    /// unrecoverable tail. The stack is popped ONLY on success, so a failed search never destroys the
+    /// accumulated prefix.
+    /// </summary>
+    private int Resync(Stack<Item> tokenStack, ISyncLAIterator<Item> tokenIterator,
+        IReadOnlySet<int> syncTerminalIds, IReadOnlySet<int> openBracketIds,
+        IReadOnlySet<int> closeBracketIds, out Item resumeToken)
+    {
+        const int initState = 0;
+        // Seed the input depth from brackets ALREADY on the stack. When the error fires mid-element the
+        // enclosing openers (a `struct {`, a `fn (`) have been shifted but not yet closed, so they're
+        // still individual un-reduced terminal items on the stack (a closer would have reduced its group
+        // away). Seeding means the discard reaches "depth 0" only after it has consumed the closers for
+        // all of those openers — i.e. genuinely exited to the top level — so a struct field's `IDENT` or
+        // a nested `comptime` inside the broken element is NOT mistaken for a top-level boundary.
+        var startDepth = 0;
+        foreach (var stacked in tokenStack)
+        {
+            if (openBracketIds.Contains(stacked.ID)) { startDepth++; }
+            else if (closeBracketIds.Contains(stacked.ID)) { startDepth--; }
+        }
+        if (startDepth < 0) { startDepth = 0; }
+
+        var depth = startDepth;
+        while (true)
+        {
+            // Discard the broken element's tokens up to the next top-level (depth-0) sync terminal, or EOF.
+            while (true)
+            {
+                var la = tokenIterator.LookAhead();
+                if (la.ID == Item.EOF.ID) { break; }
+                if (depth == 0 && syncTerminalIds.Contains(la.ID)) { break; }
+                if (openBracketIds.Contains(la.ID)) { depth++; }
+                else if (closeBracketIds.Contains(la.ID) && depth > 0) { depth--; }
+                tokenIterator.MoveNext();
+            }
+            resumeToken = tokenIterator.LookAhead();
+            var col = resumeToken.ID + 1;
+
+            // Pop to the OUTERMOST level: past every unclosed opener on the stack (V1 recovers at the
+            // top-level list only), then to the nearest state that actually accepts the resume lookahead.
+            // A Stack's ToArray is top-first, so snapshot[k].State is the state exposed after popping k
+            // items (k == length ⇒ the initial state). The pop is applied only on success, so a failed
+            // search never destroys the accumulated good-element prefix.
+            var snapshot = tokenStack.ToArray();
+            var minPop = 0;
+            for (var k = 0; k < snapshot.Length; k++)
+            {
+                if (openBracketIds.Contains(snapshot[k].ID)) { minPop = k + 1; }
+            }
+            for (var k = minPop; k <= snapshot.Length; k++)
+            {
+                var st = k < snapshot.Length ? snapshot[k].State : initState;
+                var act = _parseTable.Actions[st, col].ActionType;
+                if (act == ActionType.Shift || act == ActionType.Reduce)
+                {
+                    for (var i = 0; i < k; i++) { tokenStack.Pop(); }
+                    return st;
+                }
+            }
+
+            // No top-level state accepts this boundary. At EOF the prefix can't be completed → give up
+            // (caller returns the best-effort partial tree). Otherwise the sync token is unusable here;
+            // discard it and scan on from depth 0 (we were at a depth-0 boundary), guaranteeing progress.
+            if (resumeToken.ID == Item.EOF.ID) { return -1; }
+            tokenIterator.MoveNext();
+            depth = 0;
+        }
+    }
+
+    /// <summary>Best-effort tree when <see cref="ParseInputResilient"/> hits an unrecoverable tail
+    /// (end-of-input with a stack that can't reduce to the start symbol): the bottom-most stacked
+    /// item — for a list grammar, the accumulated element prefix — or <see cref="Item.EOF"/> if the
+    /// stack is empty. Consumers should consult <see cref="ResilientParseResult.Errors"/> alongside it.</summary>
+    private static Item BuildPartialTree(Stack<Item> tokenStack)
+    {
+        if (tokenStack.Count == 0) { return Item.EOF; }
+        var arr = tokenStack.ToArray();   // top..bottom
+        return arr[^1];
+    }
+
+    /// <summary>
     /// Runtime-build constructor: invokes <see cref="ParserTableBuilder"/> to
     /// compute the parse table from the grammar. Throws <see cref="GrammarConflictException"/>
     /// on any unresolved S/R or R/R conflict (use <see cref="Conflicts"/> on the
