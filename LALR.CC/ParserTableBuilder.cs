@@ -21,6 +21,16 @@ public sealed class ParserTableBuilder
     private readonly List<LR0Item> _lr0Items;
     private readonly List<LR1Item> _lr1Items;
 
+    // O(1) interning maps parallel to the item/state lists (list index == id), so
+    // GetLR0ItemID/GetLR1ItemID/GetLR0StateID hash-look-up instead of linear-scanning
+    // every item built so far (quadratic on a large grammar's tens of thousands of
+    // items). Ids are unchanged — still assigned in first-seen order — so the emitted
+    // parse table is byte-identical. The public LR0Items/LR1Items/LR0States
+    // introspection surface is untouched.
+    private readonly Dictionary<LR0Item, int> _lr0ItemIds;
+    private readonly Dictionary<LR1Item, int> _lr1ItemIds;
+    private readonly Dictionary<int, List<int>> _lr0StateBuckets;
+
     private readonly List<HashSet<int>> _lr0States;
     private readonly List<HashSet<int>> _lr0Kernels;
     private readonly List<HashSet<int>> _lalrStates;
@@ -85,6 +95,9 @@ public sealed class ParserTableBuilder
         _gotoPrecedence = [];
         _lr0Items = [];
         _lr1Items = [];
+        _lr0ItemIds = new Dictionary<LR0Item, int>();
+        _lr1ItemIds = new Dictionary<LR1Item, int>();
+        _lr0StateBuckets = new Dictionary<int, List<int>>();
         _lr0States = [];
         _lr0Kernels = [];
         _lalrStates = [];
@@ -136,16 +149,13 @@ public sealed class ParserTableBuilder
     /// </summary>
     private int GetLR0ItemID(LR0Item item)
     {
-        var nItemID = 0;
-        foreach (var oItem in _lr0Items)
+        if (_lr0ItemIds.TryGetValue(item, out var nItemID))
         {
-            if (oItem.Equals(item))
-            {
-                return nItemID;
-            }
-            nItemID++;
+            return nItemID;
         }
+        nItemID = _lr0Items.Count;
         _lr0Items.Add(item);
+        _lr0ItemIds[item] = nItemID;
         return nItemID;
     }
 
@@ -154,16 +164,13 @@ public sealed class ParserTableBuilder
     /// </summary>
     private int GetLR1ItemID(LR1Item item)
     {
-        var nItemID = 0;
-        foreach (var oItem in _lr1Items)
+        if (_lr1ItemIds.TryGetValue(item, out var nItemID))
         {
-            if (oItem.Equals(item))
-            {
-                return nItemID;
-            }
-            nItemID++;
+            return nItemID;
         }
+        nItemID = _lr1Items.Count;
         _lr1Items.Add(item);
+        _lr1ItemIds[item] = nItemID;
         return nItemID;
     }
 
@@ -172,18 +179,54 @@ public sealed class ParserTableBuilder
     /// </summary>
     private int GetLR0StateID(HashSet<int> state, ref bool bAdded)
     {
-        var nStateID = 0;
-        foreach (var oState in _lr0States)
+        // Bucket candidate states by an order-independent set hash so SetEquals only
+        // runs against the (usually one) states that share a hash, instead of every
+        // state built so far. Ids are still handed out in first-seen order.
+        var hash = SetHash(state);
+        if (_lr0StateBuckets.TryGetValue(hash, out var bucket))
         {
-            if (oState.SetEquals(state))
+            foreach (var nCandidate in bucket)
             {
-                return nStateID;
+                if (_lr0States[nCandidate].SetEquals(state))
+                {
+                    return nCandidate;
+                }
             }
-            nStateID++;
         }
+        else
+        {
+            bucket = new List<int>();
+            _lr0StateBuckets[hash] = bucket;
+        }
+
+        var nStateID = _lr0States.Count;
         _lr0States.Add(state);
+        bucket.Add(nStateID);
         bAdded = true;
         return nStateID;
+    }
+
+    /// <summary>
+    /// Order-independent (commutative) hash of a state's LR0-item-id set, used only to
+    /// bucket candidates for <see cref="GetLR0StateID"/>. Collisions are harmless —
+    /// <see cref="HashSet{T}.SetEquals"/> stays the authority within a bucket.
+    /// </summary>
+    private static int SetHash(HashSet<int> set)
+    {
+        unchecked
+        {
+            var h = set.Count;
+            foreach (var x in set)
+            {
+                // murmur-style avalanche per element, XOR-combined so the element
+                // order (HashSet enumeration order) doesn't affect the result.
+                var k = x * unchecked((int)0xcc9e2d51);
+                k = (k << 15) | (int)((uint)k >> 17);
+                k *= 0x1b873593;
+                h ^= k;
+            }
+            return h;
+        }
     }
 
     /// <summary>
@@ -192,12 +235,22 @@ public sealed class ParserTableBuilder
     private HashSet<int> LR0Closure(IEnumerable<int> items)
     {
         var closed = new HashSet<int>();
-        var open = items.ToList();
+        // FIFO worklist via Queue (not List.RemoveAt(0), which shifts the whole list on
+        // every pop) + a "seen" set for O(1) membership (was open.Contains, an O(n)
+        // scan). FIFO order is preserved, so items are interned in the same order.
+        var open = new Queue<int>();
+        var seen = new HashSet<int>();
+        foreach (var nSeed in items)
+        {
+            if (seen.Add(nSeed))
+            {
+                open.Enqueue(nSeed);
+            }
+        }
 
         while (open.Count > 0)
         {
-            var nItem = open[0];
-            open.RemoveAt(0);
+            var nItem = open.Dequeue();
             var item = _lr0Items[nItem];
             closed.Add(nItem);
 
@@ -208,9 +261,9 @@ public sealed class ParserTableBuilder
                 {
                     var newItem = new LR0Item(nProduction, 0);
                     var nNewItemID = GetLR0ItemID(newItem);
-                    if (!open.Contains(nNewItemID) && !closed.Contains(nNewItemID))
+                    if (seen.Add(nNewItemID))
                     {
-                        open.Add(nNewItemID);
+                        open.Enqueue(nNewItemID);
                     }
                 }
                 nProduction++;
@@ -226,12 +279,20 @@ public sealed class ParserTableBuilder
     private HashSet<int> LR1Closure(IEnumerable<int> items)
     {
         var closed = new HashSet<int>();
-        var open = items.ToList();
+        // FIFO worklist + O(1) "seen" membership (see LR0Closure) — same interning order.
+        var open = new Queue<int>();
+        var seen = new HashSet<int>();
+        foreach (var nSeed in items)
+        {
+            if (seen.Add(nSeed))
+            {
+                open.Enqueue(nSeed);
+            }
+        }
 
         while (open.Count > 0)
         {
-            var nLR1Item = open[0];
-            open.RemoveAt(0);
+            var nLR1Item = open.Dequeue();
             var lr1Item = _lr1Items[nLR1Item];
             var lr0Item = _lr0Items[lr1Item.LR0ItemID];
             closed.Add(nLR1Item);
@@ -258,9 +319,9 @@ public sealed class ParserTableBuilder
                                 var nNewLR0ItemID = GetLR0ItemID(newLR0Item);
                                 var newLR1Item = new LR1Item(nNewLR0ItemID, nTokenFirst);
                                 var nNewLR1ItemID = GetLR1ItemID(newLR1Item);
-                                if (!open.Contains(nNewLR1ItemID) && !closed.Contains(nNewLR1ItemID))
+                                if (seen.Add(nNewLR1ItemID))
                                 {
-                                    open.Add(nNewLR1ItemID);
+                                    open.Enqueue(nNewLR1ItemID);
                                 }
                             }
                         }
@@ -306,12 +367,16 @@ public sealed class ParserTableBuilder
         var startState = new HashSet<int> { GetLR0ItemID(new LR0Item(0, 0)) };
 
         var bIgnore = false;
-        var open = new List<int> { GetLR0StateID(LR0Closure(startState), ref bIgnore) };
+        // FIFO worklist via Queue (List.RemoveAt(0) shifts every element on each pop —
+        // O(states^2) over the whole state set). Each state is enqueued exactly once,
+        // gated by GotoLR0's bAdded (set only when GetLR0StateID mints a new state), so
+        // no membership set is needed and processing order is unchanged.
+        var open = new Queue<int>();
+        open.Enqueue(GetLR0StateID(LR0Closure(startState), ref bIgnore));
 
         while (open.Count > 0)
         {
-            var nState = open[0];
-            open.RemoveAt(0);
+            var nState = open.Dequeue();
             while (_lrGotos.Count <= nState)
             {
                 _lrGotos.Add(new int[_grammar.SymbolNames.Length]);
@@ -329,7 +394,7 @@ public sealed class ParserTableBuilder
 
                 if (bAdded)
                 {
-                    open.Add(nGoto);
+                    open.Enqueue(nGoto);
                 }
             }
         }
