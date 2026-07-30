@@ -1,4 +1,6 @@
 using CL = global::Console.Lib;
+using DIR.Lib;
+using Layout = DIR.Lib.Layout;
 
 namespace LALR.CC.Tui.Model;
 
@@ -28,48 +30,53 @@ internal sealed class Node : CL.ITreeNode<Node>
     /// <summary>Plain-text label used by the status bar (no escape sequences).</summary>
     public string PlainTitle => RightTag is null ? Label : $"{Label}    {RightTag}";
 
-    public string FormatNodeContent(int width, CL.ColorMode mode, bool isSelected)
+    /// <summary>
+    /// Layout: <c>[label]  [right tag]</c>, the label taking the slack.
+    /// <para>
+    /// The old string form hand-rolled the whole thing -- rightLen / gap / labelMax / pad, plus a
+    /// manual truncation and a separately-styled padding run -- which is precisely what the layout
+    /// engine does. The drop-the-tag-before-the-label priority survives as
+    /// <see cref="Layout.Node.CollapseBelow"/> on the tag: a Stack child whose arranged extent falls
+    /// under the threshold is dropped whole (no paint, no hit, no gap) rather than clipped into an
+    /// unreadable fragment.
+    /// </para>
+    /// <para>
+    /// One deliberate cosmetic loss: an over-long label is now CLIPPED by the engine rather than
+    /// truncated with an ellipsis, because <c>Layout.Content.Text</c> has no ellipsize option. Adding
+    /// one belongs in DIR.Lib, and pulling DIR.Lib into this release wave to buy a single glyph was not
+    /// worth it.
+    /// </para>
+    /// </summary>
+    public Layout.Node BuildNodeContent(in CL.RowContext context)
     {
-        if (width <= 0) return "";
+        // Colour the primary label by node kind. Selected rows always get the bright variant on a
+        // non-black background to make the cursor obvious.
+        var (fg, bg) = StyleFor(Kind, context.Selected);
 
-        // Color the primary label by node kind. Selected rows always get the
-        // bright variant on a non-black background to make the cursor obvious.
-        var (fg, bg) = StyleFor(Kind, isSelected);
-        var labelStyle = new CL.VtStyle(fg, bg).Apply(mode);
-        var rightStyle = new CL.VtStyle(CL.SgrColor.BrightBlack, bg).Apply(mode);
+        var label = Layout.Builder.Text(Label, 1f, Rgba(fg)).WStar().HStar();
 
-        var label = Label;
-        var right = RightTag ?? "";
-
-        // Layout: [label]   [right tag]   padding to width.
-        // If they don't both fit, the right tag is dropped first, then the label
-        // gets truncated.
-        int rightLen = right.Length;
-        int gap = right.Length > 0 ? 2 : 0;
-        if (rightLen + gap >= width) { right = ""; rightLen = 0; gap = 0; }
-
-        int labelMax = width - rightLen - gap;
-        if (label.Length > labelMax)
+        if (RightTag is not { Length: > 0 } right)
         {
-            label = labelMax > 1 ? label.Substring(0, labelMax - 1) + "…" : label.Substring(0, labelMax);
+            return Layout.Builder.HStack(label).Bg(Rgba(bg));
         }
-        int pad = width - label.Length - rightLen - gap;
 
-        var sb = new System.Text.StringBuilder(width + 64);
-        sb.Append(labelStyle).Append(label).Append(CL.VtStyle.Reset);
-        if (rightLen > 0)
-        {
-            sb.Append(' ', gap);
-            sb.Append(rightStyle).Append(right).Append(CL.VtStyle.Reset);
-        }
-        if (pad > 0)
-        {
-            sb.Append(new CL.VtStyle(fg, bg).Apply(mode));
-            sb.Append(' ', pad);
-            sb.Append(CL.VtStyle.Reset);
-        }
-        return sb.ToString();
+        // The two-space gap rides inside the tag cell so the tag and its gap collapse as one unit --
+        // a separate spacer would linger after the tag was dropped.
+        const int GapColumns = 2;
+        var tagColumns = right.Length + GapColumns;
+
+        return Layout.Builder.HStack(
+                label,
+                Layout.Builder.Text($"  {right}", 1f, Rgba(CL.SgrColor.BrightBlack))
+                    .WFixed(tagColumns).HStar()
+                    .CollapseBelow(tagColumns))
+            .Bg(Rgba(bg));
     }
+
+    // An alias (CL = Console.Lib) does not bring extension methods into scope, and this file aliases
+    // deliberately, so ToRgba is reached in its explicit static form -- named once here rather than
+    // spelled out at every colour.
+    private static RGBAColor32 Rgba(CL.SgrColor color) => CL.SgrColorExtensions.ToRgba(color);
 
     private static (CL.SgrColor Fg, CL.SgrColor Bg) StyleFor(NodeKind kind, bool isSelected)
     {

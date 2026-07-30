@@ -1,6 +1,7 @@
-using System.Text;
 using LALR.CC;
 using CL = global::Console.Lib;
+using DIR.Lib;
+using Layout = DIR.Lib.Layout;
 
 namespace LALR.CC.Tui.Model;
 
@@ -8,10 +9,10 @@ namespace LALR.CC.Tui.Model;
 /// One row of the parse-table view: the action/goto cells for a single LALR
 /// state. Cells are pre-rendered to short strings (s12, r3, acc, …) and laid
 /// out with a fixed-width state column followed by one fixed-width column per
-/// grammar symbol (EOF lives in column 0). Rendering pads with spaces and
-/// truncates trailing columns when the viewport is narrower than the table.
+/// grammar symbol (EOF lives in column 0). Trailing columns are dropped when the
+/// viewport is narrower than the table.
 /// </summary>
-internal sealed class ParseTableRow : CL.IRowFormatter
+internal sealed class ParseTableRow : CL.IRowLayout
 {
     public const int StateColWidth = 5;
     public const int CellWidth = 5;     // wide enough for "acc", "s99", "r99", or a 2-digit goto
@@ -51,46 +52,60 @@ internal sealed class ParseTableRow : CL.IRowFormatter
         };
     }
 
-    public string FormatRow(int width, CL.ColorMode colorMode) => FormatRow(width, colorMode, isSelected: false);
-
-    public string FormatRow(int width, CL.ColorMode colorMode, bool isSelected)
+    /// <summary>
+    /// One fixed-width cell per grammar symbol, after a fixed-width state column.
+    /// <para>
+    /// The trailing-column truncation the old string form did by hand
+    /// (<c>used + CellWidth &lt;= width</c>) is now <see cref="Layout.Node.CollapseBelow"/> per cell:
+    /// a cell that cannot get its full width is dropped whole rather than clipped into a partial
+    /// number, which is what the manual loop was protecting against.
+    /// </para>
+    /// <para>
+    /// The <c>PadLeft</c> stays, and is not the padding this refactor set out to remove: it
+    /// right-aligns a value INSIDE its own fixed cell, and it has to keep matching
+    /// <see cref="ParseTableView"/>'s header, which is a plain header string rather than a tree. Using
+    /// <c>TextAlign.Far</c> across a 5-wide cell instead would shift every row one column against that
+    /// header.
+    /// </para>
+    /// </summary>
+    public Layout.Node BuildRow(in CL.RowContext context)
     {
-        var bg = isSelected ? CL.SgrColor.Blue : CL.SgrColor.Black;
-        var fgState = isSelected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightCyan;
-        var fgPlain = isSelected ? CL.SgrColor.BrightWhite : CL.SgrColor.White;
-        var fgShift = isSelected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightGreen;
-        var fgReduce = isSelected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightYellow;
-        var fgGoto = isSelected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightCyan;
-        var fgErr = isSelected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightRed;
+        var selected = context.Selected;
+        var bg = Rgba(selected ? CL.SgrColor.Blue : CL.SgrColor.Black);
+        var fgState = Rgba(selected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightCyan);
+        var fgPlain = Rgba(selected ? CL.SgrColor.BrightWhite : CL.SgrColor.White);
+        var fgShift = Rgba(selected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightGreen);
+        var fgReduce = Rgba(selected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightYellow);
+        var fgGoto = Rgba(selected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightCyan);
+        var fgErr = Rgba(selected ? CL.SgrColor.BrightWhite : CL.SgrColor.BrightRed);
 
-        var sb = new StringBuilder(width + 64);
-        sb.Append(new CL.VtStyle(fgState, bg).Apply(colorMode));
-        sb.Append(' ').Append(_stateId.ToString().PadLeft(StateColWidth - 2)).Append(' ');
-        sb.Append(CL.VtStyle.Reset);
+        var children = new Layout.Node[_cells.Length + 1];
+        children[0] = Layout.Builder
+            .Text($" {_stateId.ToString().PadLeft(StateColWidth - 2)} ", 1f, fgState)
+            .WFixed(StateColWidth).HStar();
 
-        var used = StateColWidth;
-        for (var i = 0; i < _cells.Length && used + CellWidth <= width; i++)
+        for (var i = 0; i < _cells.Length; i++)
         {
             var cell = _cells[i];
-            CL.SgrColor fg;
-            if (cell.Length == 0) fg = fgPlain;
-            else if (cell == "acc") fg = fgReduce;
-            else if (cell == "RR" || cell == "SR") fg = fgErr;
-            else if (_isShift[i]) fg = fgShift;
-            else if (_isReduce[i]) fg = fgReduce;
-            else if (_isGoto[i]) fg = fgGoto;
-            else fg = fgPlain;
-            sb.Append(new CL.VtStyle(fg, bg).Apply(colorMode));
-            sb.Append(cell.PadLeft(CellWidth - 1)).Append(' ');
-            sb.Append(CL.VtStyle.Reset);
-            used += CellWidth;
+            var fg = cell.Length == 0 ? fgPlain
+                : cell == "acc" ? fgReduce
+                : cell is "RR" or "SR" ? fgErr
+                : _isShift[i] ? fgShift
+                : _isReduce[i] ? fgReduce
+                : _isGoto[i] ? fgGoto
+                : fgPlain;
+
+            children[i + 1] = Layout.Builder
+                .Text(cell.PadLeft(CellWidth - 1), 1f, fg)
+                .WFixed(CellWidth).HStar()
+                .CollapseBelow(CellWidth);
         }
-        if (used < width)
-        {
-            sb.Append(new CL.VtStyle(fgPlain, bg).Apply(colorMode));
-            sb.Append(' ', width - used);
-            sb.Append(CL.VtStyle.Reset);
-        }
-        return sb.ToString();
+
+        return Layout.Builder.HStack(children).Bg(bg);
     }
+
+    // An alias (CL = Console.Lib) does not bring extension methods into scope, and this file aliases
+    // deliberately, so ToRgba is reached in its explicit static form -- named once here rather than
+    // spelled out at every colour.
+    private static RGBAColor32 Rgba(CL.SgrColor color) => CL.SgrColorExtensions.ToRgba(color);
 }

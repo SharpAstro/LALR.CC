@@ -54,7 +54,32 @@
     <ProjectReference Include="..\..\..\sharpastro\Console.Lib\src\Console.Lib\Console.Lib.csproj" />
   </ItemGroup>
   <ItemGroup Condition="'$(UseLocalConsoleLib)' != 'true'">
-    <PackageReference Include="Console.Lib" Version="2.10.501" />
+    <!-- Wildcard within the minor, matching how every other consumer of the SharpAstro siblings pins
+         them: they publish X.Y.<ci_run_number>, so a fixed patch has to be hand-edited after each
+         release and silently rots instead. This pin was 2.10.501 (two majors behind), which only
+         went unnoticed because a sibling working copy on disk wins over the package, so the package
+         path was never exercised locally. -->
+    <PackageReference Include="Console.Lib" Version="4.10.*" />
+  </ItemGroup>
+
+  <!--
+    DIR.Lib provides Layout.Node / Layout.Builder / RGBAColor32, and is referenced DIRECTLY. The TUI's rows and
+    tree nodes describe themselves as layout trees (Console.Lib 4.10's IRowLayout and
+    ITreeNode.BuildNodeContent), so DIR.Lib types now appear in this project's own source. It does
+    arrive transitively through Console.Lib either way, but leaning on a transitive for types you name
+    yourself breaks the day the intermediate stops needing them, and it reads as an accident rather
+    than a dependency. Same local-sibling switch as Console.Lib above, so the two cannot disagree
+    about whether they are packages or projects; a project Console.Lib plus a package DIR.Lib would
+    load two DIR.Lib identities.
+  -->
+  <PropertyGroup>
+    <UseLocalDirLib Condition="'$(UseLocalDirLib)' == '' AND '$(UseLocalConsoleLib)' == 'true' AND Exists('..\..\..\sharpastro\DIR.Lib\src\DIR.Lib\DIR.Lib.csproj')">true</UseLocalDirLib>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseLocalDirLib)' == 'true'">
+    <ProjectReference Include="..\..\..\sharpastro\DIR.Lib\src\DIR.Lib\DIR.Lib.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalDirLib)' != 'true'">
+    <PackageReference Include="DIR.Lib" Version="7.3.*" />
   </ItemGroup>
 
 </Project>
