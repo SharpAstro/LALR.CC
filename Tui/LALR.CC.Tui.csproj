@@ -59,7 +59,7 @@
          release and silently rots instead. This pin was 2.10.501 (two majors behind), which only
          went unnoticed because a sibling working copy on disk wins over the package, so the package
          path was never exercised locally. -->
-    <PackageReference Include="Console.Lib" Version="4.10.*" />
+    <PackageReference Include="Console.Lib" Version="4.17.*" />
   </ItemGroup>
 
   <!--
@@ -79,7 +79,7 @@
     <ProjectReference Include="..\..\..\sharpastro\DIR.Lib\src\DIR.Lib\DIR.Lib.csproj" />
   </ItemGroup>
   <ItemGroup Condition="'$(UseLocalDirLib)' != 'true'">
-    <PackageReference Include="DIR.Lib" Version="7.3.*" />
+    <PackageReference Include="DIR.Lib" Version="7.11.*" />
   </ItemGroup>
 
 </Project>
