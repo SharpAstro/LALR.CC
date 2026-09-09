@@ -31,11 +31,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Source-link: PDBs carry GitHub URLs for source mapping, so debuggers
-         can step into library code without symbols on disk. Build-time only;
-         doesn't flow to consumers. -->
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.203" PrivateAssets="All" />
-
     <!-- YamlDotNet — used by the source generator at build time. Pulled here
          (not in the generator project) so $(PkgYamlDotNet) is available to the
          analyzer-pack target below. PrivateAssets="all" keeps it out of
