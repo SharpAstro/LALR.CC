@@ -263,6 +263,49 @@ public class PreprocessorTokenStreamTests
         new(IfSym, IfDefSym, IfNDefSym, ElseSym, EndIfSym, defined.Contains,
             elifDefSymbol: ElifDefSym, elifNDefSymbol: ElifNDefSym);
 
+    /// <summary>
+    /// A host <see cref="PreprocessorTokenStream.EvaluateCondition"/> replaces the
+    /// built-in evaluation: it receives the raw (unexpanded) <c>#if</c> argument
+    /// tokens and decides the branch, and the rewrite hook is not consulted for
+    /// them, so ordinary text can keep a pass-through rewrite.
+    /// </summary>
+    [Fact]
+    public void EvaluateCondition_ReplacesBuiltInEvaluation()
+    {
+        // #if ON  / a / #endif → a   (the host says ON is true)
+        // #if OFF / b / #endif → dropped
+        var inner = new ListIterator([
+            Tok(IfSym, "#if", 1), Tok(IdSym, "ON", 1),
+            Tok(IdSym, "a", 2),
+            Tok(EndIfSym, "#endif", 3),
+            Tok(IfSym, "#if", 4), Tok(IdSym, "OFF", 4),
+            Tok(IdSym, "b", 5),
+            Tok(EndIfSym, "#endif", 6),
+            Tok(IdSym, "c", 7),
+        ]);
+        var conditions = new List<string>();
+        var rewritten = new List<string>();
+        using var pp = new PreprocessorTokenStream(
+            inner,
+            new Dictionary<int, Func<IReadOnlyList<Item>, IEnumerable<Item>>>(),
+            t => { rewritten.Add((string)t.Content); return [t]; },
+            Conditionals([]))
+        {
+            EvaluateCondition = args =>
+            {
+                var text = (string)args[0].Content;
+                conditions.Add(text);
+                return text == "ON";
+            },
+        };
+        var seen = Drain(pp);
+        Assert.Equal(2, seen.Count);
+        Assert.Equal("a", seen[0].Content);
+        Assert.Equal("c", seen[1].Content);
+        Assert.Equal(["ON", "OFF"], conditions);
+        Assert.Equal(["a", "c"], rewritten);
+    }
+
     [Fact]
     public void Ifdef_WhenDefined_EmitsBranch()
     {

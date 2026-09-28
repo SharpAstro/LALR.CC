@@ -51,6 +51,19 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
     }
     private Func<string, IReadOnlyList<Item>, IEnumerable<Item>> _expandFuncMacro;
 
+    /// <summary>
+    /// Optional replacement for the built-in <c>#if</c> / <c>#elif</c> evaluation.
+    /// When set, the stream hands the directive's argument tokens, unexpanded, to
+    /// this function and uses its result as the branch condition, so the host owns
+    /// macro expansion and <c>defined</c> handling for conditions. That lets a host
+    /// keep the <c>rewrite</c> hook a plain pass-through for ordinary text (a C
+    /// preprocessor must not expand a macro's arguments before it has collected
+    /// them) while still expanding macros inside conditions. When null (the
+    /// default), <see cref="PreprocessorExpressionEvaluator"/> runs with the
+    /// <c>rewrite</c> and <see cref="ExpandFuncMacro"/> hooks.
+    /// </summary>
+    public Func<IReadOnlyList<Item>, bool> EvaluateCondition { get; set; }
+
     // Conditional-compilation state. Stack of branch entries — one per
     // open #if/#ifdef/#ifndef. Each entry tracks (Emitting, AnyEmittedYet):
     // the first bit is "is the current branch's body emitting?", the second
@@ -247,10 +260,13 @@ public sealed class PreprocessorTokenStream : RewritingTokenStream
     /// constant-expression sub-language: integer literals (decimal/hex),
     /// <c>defined(NAME)</c>, arithmetic / comparison / logical / bitwise /
     /// ternary operators, parens, and object-like macro expansion via the
-    /// rewrite hook so <c>#if VERSION &gt;= 2</c> works.
+    /// rewrite hook so <c>#if VERSION &gt;= 2</c> works. A host-supplied
+    /// <see cref="EvaluateCondition"/> takes over the whole evaluation.
     /// </summary>
     private bool EvaluateIfExpression(IReadOnlyList<Item> args)
-        => PreprocessorExpressionEvaluator.Evaluate(args, _conditionals.IsDefined, _rewrite, _expandFuncMacro);
+        => EvaluateCondition is { } evaluate
+            ? evaluate(args)
+            : PreprocessorExpressionEvaluator.Evaluate(args, _conditionals.IsDefined, _rewrite, _expandFuncMacro);
 
     private void PushBranch(bool emitting)
     {
