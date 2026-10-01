@@ -22,7 +22,7 @@ namespace LALR.CC.LexicalGrammar;
 public sealed class BytesLexer : ISyncIterator<Item>
 {
     private readonly ReadOnlyMemory<byte> _bytes;
-    private readonly Dictionary<string, CompiledState> _compiledStates;
+    private readonly IReadOnlyDictionary<string, CompiledLexerTable.State> _compiledStates;
     private readonly Stack<string> _states;
     private readonly LexerErrorMode _errorMode;
     private readonly int _errorSymbolId;
@@ -33,12 +33,6 @@ public sealed class BytesLexer : ISyncIterator<Item>
     private long _byteOffset;
     private int _line = 1;
     private int _column = 1;
-
-    private readonly struct CompiledState(Dfa.Dfa byteDfa, LexRule[] rules)
-    {
-        public Dfa.Dfa ByteDfa { get; } = byteDfa;
-        public LexRule[] Rules { get; } = rules;
-    }
 
     /// <param name="initialLine">
     /// 1-based line number the first token reports (default 1). Lets a caller lex a
@@ -73,26 +67,8 @@ public sealed class BytesLexer : ISyncIterator<Item>
         _columnMode = columnMode;
         _line = initialLine;
         _states = new Stack<string>([PipeBytesLexer.RootState]);
-        _compiledStates = new Dictionary<string, CompiledState>(patternTable.Count, StringComparer.Ordinal);
-        // Same compilation pass as PipeBytesLexer — first-rule-wins falls out of
-        // assigning rule index as DFA pattern id, so the smallest accepting id
-        // at any DFA state is the first matching rule.
-        foreach (var kv in patternTable)
-        {
-            var rules = kv.Value;
-            if (rules is null || rules.Length == 0)
-            {
-                throw new ArgumentException($"state '{kv.Key}' has no rules", nameof(patternTable));
-            }
-            var dfaPatterns = new (IRx, int)[rules.Length];
-            for (var i = 0; i < rules.Length; i++)
-            {
-                dfaPatterns[i] = (rules[i].Pattern, i);
-            }
-            var codepointDfa = DfaCompiler.CompileMany(dfaPatterns);
-            var byteDfa = Utf8DfaLowering.Lower(codepointDfa);
-            _compiledStates[kv.Key] = new CompiledState(byteDfa, rules);
-        }
+        // The same compiled states as PipeBytesLexer, shared by every lexer over these rules.
+        _compiledStates = CompiledLexerTable.For(patternTable, nameof(patternTable)).States;
     }
 
     /// <summary>Convenience: encode a UTF-16 string to UTF-8 once, then lex synchronously.</summary>
