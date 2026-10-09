@@ -122,6 +122,60 @@ public sealed class ParserTableBuilder
 
         _parseTable = new ParseTable(nLalrStates, nTokens);
         GenerateParseTable();
+#pragma warning disable RS1035
+        var dump = System.Environment.GetEnvironmentVariable("LALRCC_RESOLVED_DUMP");
+        if (!string.IsNullOrEmpty(dump))
+        {
+            var lines = new List<string>(new HashSet<string>(_diagResolved));
+            lines.Sort(System.StringComparer.Ordinal);
+            System.IO.File.WriteAllLines(dump + "." + _grammar.SymbolNames.Length + ".txt", lines);
+        }
+#pragma warning restore RS1035
+    }
+
+    private readonly List<string> _diagResolved = new();
+
+    private string DiagItem(int production, int position)
+    {
+        var pr = _productions[production];
+        var sb = new System.Text.StringBuilder();
+        sb.Append(_grammar.SymbolNames[pr.Left].Name).Append(" ->");
+        for (var i = 0; i <= (pr.Right?.Length ?? 0); i++)
+        {
+            if (i == position) { sb.Append(" ."); }
+            if (pr.Right is { } r && i < r.Length) { sb.Append(' ').Append(_grammar.SymbolNames[r[i]].Name); }
+        }
+        return sb.ToString();
+    }
+
+    private void DiagRecord(int nStateID, int nToken, List<Action> actions, Action chosen, string how)
+    {
+        string Describe(Action a)
+        {
+            if (a.ActionType == ActionType.Reduce)
+            {
+                var pr = _productions[a.ActionParameter];
+                return "reduce [" + DiagItem(a.ActionParameter, pr.Right?.Length ?? 0) + "]";
+            }
+            var items = new List<string>();
+            foreach (var id in _lalrStates[nStateID])
+            {
+                var lr0 = _lr0Items[_lr1Items[id].LR0ItemID];
+                var r = _productions[lr0.Production].Right;
+                if (r is not null && lr0.Position < r.Length && r[lr0.Position] == nToken)
+                {
+                    items.Add(DiagItem(lr0.Production, lr0.Position));
+                }
+            }
+            var distinct = new List<string>(new HashSet<string>(items));
+            distinct.Sort(System.StringComparer.Ordinal);
+            return "shift [" + string.Join(" | ", distinct) + "]";
+        }
+        var others = new List<string>();
+        foreach (var a in actions) { if (!a.Equals(chosen)) { others.Add(Describe(a)); } }
+        others.Sort(System.StringComparer.Ordinal);
+        var la = nToken < 0 ? "$" : _grammar.SymbolNames[nToken].Name;
+        _diagResolved.Add("on '" + la + "' (" + how + "): KEEP " + Describe(chosen) + "  DROP " + string.Join("  DROP ", others));
     }
 
     /// <summary>
@@ -688,6 +742,7 @@ public sealed class ParserTableBuilder
                 if (importantActions.Count == 1)
                 {
                     _parseTable.Actions[nStateID, nToken + 1] = importantActions[0];
+                    if (actions.Count > 1) { DiagRecord(nStateID, nToken, actions, importantActions[0], "precedence"); }
                 }
                 else if (importantActions.Count > 1)
                 {
@@ -709,10 +764,12 @@ public sealed class ParserTableBuilder
                     if (derivation == Derivation.LeftMost && reduceActions.Count == 1)
                     {
                         _parseTable.Actions[nStateID, nToken + 1] = reduceActions[0];
+                        DiagRecord(nStateID, nToken, actions, reduceActions[0], "leftmost");
                     }
                     else if (derivation == Derivation.RightMost && shiftAction.HasValue)
                     {
                         _parseTable.Actions[nStateID, nToken + 1] = shiftAction.Value;
+                        DiagRecord(nStateID, nToken, actions, shiftAction.Value, "rightmost");
                     }
                     else
                     {
