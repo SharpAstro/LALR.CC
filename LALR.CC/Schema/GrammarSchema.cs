@@ -99,6 +99,15 @@ public sealed class ProductionSchema
     /// "no rewriter; use the default <see cref="Reduction"/>".
     /// </summary>
     public string Action { get; set; }
+
+    /// <summary>
+    /// Set by <see cref="OptionalExpansion.Expand"/> on a rule it produced with an optional symbol absent:
+    /// for each argument of the action (one per symbol the rule was written with), the index of the child
+    /// that fills it, or <c>-1</c> for an absent optional, which the action receives as <c>null</c>.
+    /// <see langword="null"/> means the children are the arguments as they are. The expansion sets it; a grammar
+    /// file does not write it.
+    /// </summary>
+    public List<int> Slots { get; set; }
 }
 
 public sealed class LexRuleSchema

@@ -37,4 +37,27 @@ public readonly partial struct Production
     {
         return ((Func<int, Item[], object>)_rewriter)?.Invoke(Left, children);
     }
+
+    /// <summary>
+    /// The rewriter for a rule the optional operator expanded (<see cref="Schema.OptionalExpansion"/>): it
+    /// hands <paramref name="rewriter"/> the children padded back to the action's full arity, slot
+    /// <c>i</c> holding <c>children[slots[i]]</c>, or <c>null</c> where <c>slots[i]</c> is <c>-1</c> (an
+    /// absent optional). With no <paramref name="slots"/> the rewriter is returned as it is.
+    /// </summary>
+    public static Func<int, Item[], object> WithSlots(Func<int, Item[], object> rewriter, int[] slots)
+    {
+        if (rewriter is null || slots is null)
+        {
+            return rewriter;
+        }
+        return (lhs, children) =>
+        {
+            var padded = new Item[slots.Length];
+            for (var i = 0; i < slots.Length; i++)
+            {
+                padded[i] = slots[i] < 0 ? null : children[slots[i]];
+            }
+            return rewriter(lhs, padded);
+        };
+    }
 }

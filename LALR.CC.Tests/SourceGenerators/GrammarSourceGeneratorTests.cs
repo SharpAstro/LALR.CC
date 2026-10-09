@@ -316,6 +316,57 @@ public class GrammarSourceGeneratorTests
         Assert.Contains("public sealed record MakeAdd(Item Arg0, Item Arg1, Item Arg2);", astSource);
     }
 
+    /// <summary>A grammar using the optional operator: <c>D -> 'p'? 'f' n</c> with one action.</summary>
+    private const string SampleWithOptional = """
+        symbols: [Root, D, p, f, n]
+        productions:
+          - derivation: none
+            rules:
+              - { lhs: Root, rhs: [D] }
+              - { lhs: D, rhs: [p?, f, n], action: decl }
+        lexer:
+          root:
+            - { symbol: p, match: "p" }
+            - { symbol: f, match: "f" }
+            - { symbol: n, match: "[0-9]+" }
+            - { symbol: n, match: "[ ]+", action: ignore }
+        """;
+
+    [Fact]
+    public void Optional_symbol_keeps_the_record_at_its_written_arity_and_emits_the_slot_map()
+    {
+        var (trees, diags) = RunGenerator(SampleWithOptional, "opt.lalr.yaml", "MyApp");
+        Assert.Empty(diags);
+
+        var sources = trees.Select(t => t.ToString()).ToList();
+        // One record for both expanded rules, one field per written symbol.
+        Assert.Contains(sources, s => s.Contains("public sealed record Decl(Item Arg0, Item Arg1, Item Arg2);", StringComparison.Ordinal));
+        var visitor = sources.Single(s => s.Contains("interface IVisitor", StringComparison.Ordinal));
+        // The rule without `p` maps argument 0 to nothing; BuildParser pads through Production.WithSlots.
+        Assert.Contains("new int[] { -1, 0, 1 },", visitor);
+        Assert.Contains("global::LALR.CC.Production.WithSlots(rewriter, slots)", visitor);
+        // The emitted schema carries the map too, for a runtime SchemaCompiler.Compile of it.
+        Assert.Contains(sources, s => s.Contains("Slots = new() { -1, 0, 1 }", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Too_many_optionals_in_one_rule_reports_Lalr0003()
+    {
+        const string yaml = """
+            symbols: [Root, a, b, c, d, e]
+            productions:
+              - derivation: none
+                rules:
+                  - { lhs: Root, rhs: [a?, b?, c?, d?, e?] }
+            lexer:
+              root:
+                - { symbol: a, match: "a" }
+            """;
+
+        var (_, diags) = RunGenerator(yaml);
+        Assert.Contains(diags, d => d.Id == "LALR0003" && d.GetMessage().Contains("at most 4"));
+    }
+
     [Fact]
     public void Visitor_EmitsIdentityVisitorWithOnePassThroughPerAction()
     {

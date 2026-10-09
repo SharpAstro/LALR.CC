@@ -139,6 +139,40 @@ internal static class VisitorEmitter
             }
         }
         sb.AppendLine("    };");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Per-production slot map of a rule the optional operator expanded (null for every other rule):");
+        sb.AppendLine("    /// the child index for each argument of its action, <c>-1</c> for an absent optional. Same");
+        sb.AppendLine("    /// indexing as <c>_productionActionNames</c>.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    private static readonly int[][] _productionSlots = new int[][]");
+        sb.AppendLine("    {");
+        if (schema.Productions != null)
+        {
+            foreach (var group in schema.Productions)
+            {
+                if (group?.Rules == null)
+                {
+                    continue;
+                }
+                foreach (var rule in group.Rules)
+                {
+                    if (rule == null)
+                    {
+                        continue;
+                    }
+                    if (rule.Slots == null)
+                    {
+                        sb.AppendLine("        null,");
+                    }
+                    else
+                    {
+                        sb.Append("        new int[] { ").Append(string.Join(", ", rule.Slots)).AppendLine(" },");
+                    }
+                }
+            }
+        }
+        sb.AppendLine("    };");
     }
 
     /// <summary>
@@ -172,10 +206,11 @@ internal static class VisitorEmitter
         sb.AppendLine("            var rules = new List<global::LALR.CC.Production>();");
         sb.AppendLine("            foreach (var src in srcGroup.Productions)");
         sb.AppendLine("            {");
+        sb.AppendLine("                var slots = _productionSlots[prodIndex];");
         sb.AppendLine("                var actionName = _productionActionNames[prodIndex++];");
         sb.AppendLine("                if (actionName != null && actions.TryGetValue(actionName, out var rewriter) && rewriter != null)");
         sb.AppendLine("                {");
-        sb.AppendLine("                    rules.Add(new global::LALR.CC.Production(src.Left, rewriter, src.Right));");
+        sb.AppendLine("                    rules.Add(new global::LALR.CC.Production(src.Left, global::LALR.CC.Production.WithSlots(rewriter, slots), src.Right));");
         sb.AppendLine("                }");
         sb.AppendLine("                else");
         sb.AppendLine("                {");
@@ -233,7 +268,7 @@ internal static class VisitorEmitter
                 {
                     continue;
                 }
-                var info = new ActionInfo(action, PascalCase(action), rule.Rhs?.Count ?? 0);
+                var info = new ActionInfo(action, PascalCase(action), rule.Slots?.Count ?? rule.Rhs?.Count ?? 0);
                 seen[action] = info;
                 result.Add(info);
             }

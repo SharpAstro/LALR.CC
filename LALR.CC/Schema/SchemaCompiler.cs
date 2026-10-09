@@ -27,6 +27,14 @@ public static class SchemaCompiler
     {
         ArgumentNullException.ThrowIfNull(schema);
 
+        // The optional operator (`X?`) first, in place: everything below sees plain rules. Idempotent, so a
+        // schema the source generator already expanded passes through unchanged.
+        var expansionErrors = OptionalExpansion.Expand(schema);
+        if (expansionErrors.Count > 0)
+        {
+            throw new SchemaCompilationException($"{expansionErrors[0].Path}: {expansionErrors[0].Message}");
+        }
+
         ValidateSymbols(schema);
         var symbolIds = BuildSymbolMap(schema);
         var grammar = BuildGrammar(schema, symbolIds, actions);
@@ -233,7 +241,7 @@ public static class SchemaCompiler
 
         return rewriter is null
             ? new Production(lhs, rhs)
-            : new Production(lhs, rewriter, rhs);
+            : new Production(lhs, Production.WithSlots(rewriter, rule.Slots?.ToArray()), rhs);
     }
 
     private static Dictionary<string, LexRule[]> BuildLexer(GrammarSchema schema, Dictionary<string, int> symbolIds)

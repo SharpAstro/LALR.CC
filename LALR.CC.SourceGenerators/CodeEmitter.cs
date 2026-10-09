@@ -164,6 +164,10 @@ internal static class CodeEmitter
             {
                 sb.Append(", Action = ").Append(StringLit(rule.Action));
             }
+            if (rule.Slots != null)
+            {
+                sb.Append(", Slots = new() { ").Append(string.Join(", ", rule.Slots)).Append(" }");
+            }
             sb.AppendLine(" },");
         }
         sb.AppendLine("                },");

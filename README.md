@@ -76,6 +76,15 @@ var result = await parser.ParseInputAsync(tokens);
 Console.WriteLine(result.Content);  // 10
 ```
 
+**Optional symbols.** A right-hand-side symbol written with a trailing `?` may be present or absent:
+`{ lhs: Decl, rhs: [pub?, fn, IDENT, Body], action: fnDecl }` stands for the two rules with and
+without `pub`. They are expanded when the grammar loads, into the same precedence group with the same
+action, so the parse table is the one the hand-written pair gives (no helper symbol and no epsilon
+reduce, so no new conflicts). The action keeps one argument per written symbol: `FnDecl` has
+`Arg0`..`Arg3` either way, and `Arg0` is `null` when `pub` is absent. A name that is itself a symbol
+is never read as optional, so a terminal named `?` stays a terminal and `"??"` makes it optional. At most
+four optionals per rule (sixteen rules).
+
 The full working version is in [`examples/Calculator/`](examples/Calculator).
 For a non-toy example see [`examples/Json/`](examples/Json) — a real JSON
 parser in ~50 visitor lines that builds `Dictionary<string,object>` /

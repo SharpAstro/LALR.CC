@@ -149,6 +149,19 @@ public sealed class GrammarSourceGenerator : IIncrementalGenerator
             return;
         }
 
+        // The optional operator (`X?`): expanded in place before anything reads the rules, so validation,
+        // the tables and every emitter see plain BNF. A rule it refuses (too many optionals) is a LALR0003
+        // like any other schema error.
+        foreach (var err in OptionalExpansion.Expand(schema))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(
+                InvalidSchemaDescriptor,
+                Location.Create(path, default, default),
+                Path.GetFileName(path),
+                err.Path,
+                err.Message));
+        }
+
         // LALR0003: structural-validation pass before emit. Unknown symbol
         // references / missing root state / duplicate symbols / etc would all
         // throw at runtime in SchemaCompiler.Compile; reporting them here

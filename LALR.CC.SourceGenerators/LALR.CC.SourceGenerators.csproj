@@ -45,6 +45,7 @@
     <Compile Include="..\LALR.CC\Derivation.cs" Link="Derivation.cs" />
     <Compile Include="..\LALR.CC\LexicalGrammar\ColumnMode.cs" Link="LexicalGrammar\ColumnMode.cs" />
     <Compile Include="..\LALR.CC\Schema\GrammarSchema.cs" Link="Schema\GrammarSchema.cs" />
+    <Compile Include="..\LALR.CC\Schema\OptionalExpansion.cs" Link="Schema\OptionalExpansion.cs" />
 
     <!--
       Phase 5 / slice 2: link the LALR(1) parse-table builder + the value types

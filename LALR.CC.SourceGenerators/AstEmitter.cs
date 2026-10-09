@@ -78,7 +78,8 @@ internal static class AstEmitter
                         continue;
                     }
                     var action = rule.Action;
-                    var arity = rule.Rhs?.Count ?? 0;
+                    // A rule the optional operator expanded keeps the arity it was written with (its slots).
+                    var arity = rule.Slots?.Count ?? rule.Rhs?.Count ?? 0;
                     if (actionArities.TryGetValue(action, out var existing))
                     {
                         if (existing != arity)
