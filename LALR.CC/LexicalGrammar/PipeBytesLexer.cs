@@ -180,6 +180,13 @@ public sealed class PipeBytesLexer : IAsyncIterator<Item>
 
             if (stuck || result.IsCompleted)
             {
+                // Trailing-context rules run over the buffered bytes; one that ran off the end of a buffer the
+                // reader can still extend asks for more, and the scan resumes with the DFA where it stopped.
+                if (compiled.Lookaheads.Length > 0 && !ApplyLookaheads(compiled, buffer, result.IsCompleted, ref bestLen, ref bestPattern))
+                {
+                    _reader.AdvanceTo(buffer.Start, buffer.End);
+                    continue;
+                }
                 if (bestPattern >= 0 && bestLen > 0)
                 {
                     var matchSlice = buffer.Slice(0, bestLen);
@@ -284,6 +291,26 @@ public sealed class PipeBytesLexer : IAsyncIterator<Item>
                     _column++;
                 }
             }
+        }
+    }
+
+    private static bool ApplyLookaheads(in CompiledLexerTable.State state, ReadOnlySequence<byte> buffer, bool complete,
+        ref long bestLen, ref int bestPattern)
+    {
+        if (buffer.IsSingleSegment)
+        {
+            return CompiledLexerTable.ApplyLookaheads(state, buffer.FirstSpan, complete, ref bestLen, ref bestPattern);
+        }
+        var len = (int)buffer.Length;
+        var rented = ArrayPool<byte>.Shared.Rent(len);
+        try
+        {
+            buffer.CopyTo(rented);
+            return CompiledLexerTable.ApplyLookaheads(state, rented.AsSpan(0, len), complete, ref bestLen, ref bestPattern);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
         }
     }
 

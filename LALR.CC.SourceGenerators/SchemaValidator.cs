@@ -285,6 +285,10 @@ internal static class SchemaValidator
         {
             errors.Add(new ValidationError($"{path}.match", "is missing"));
         }
+        if (rule.Lookahead is { Length: 0 })
+        {
+            errors.Add(new ValidationError($"{path}.lookahead", "is empty"));
+        }
 
         // Mutual-exclusion: at most one of (push, pop, action) may be set.
         var instructions = 0;

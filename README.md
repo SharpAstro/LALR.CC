@@ -198,7 +198,7 @@ lookahead).
 emits `Item` tokens.
 
 The lexer is configured with a state table:
-`IReadOnlyDictionary<string, LexRule[]>` where `LexRule = (int symbolId, IRx pattern, string instruction)`.
+`IReadOnlyDictionary<string, LexRule[]>` where `LexRule = (int symbolId, IRx pattern, string instruction, IRx lookahead = null)`.
 At construction, each state's rules are compiled into a single byte DFA:
 
 1. `DfaCompiler.CompileMany` builds a codepoint NFA via Thompson construction
@@ -222,6 +222,22 @@ matched bytes are UTF-8-decoded once into `Item.Content`; the rule's
 | `PipeBytesLexer.Ignore` (`"#ignore"`) | drop the matched token, restart scanning |
 | `PipeBytesLexer.PopState` (`"#pop"`) | pop one state off the stack |
 | any other string | push that state name |
+
+**Trailing context (`lookahead:`).** A rule may carry a second pattern that must match right after its
+`match:` text without being consumed (flex's `r/s`). zig's block labels are the motivating case: an LALR(1)
+parser cannot tell the `blk: {` of a labeled block from the `len :0` of a sentinel slice at the `:`, but the
+lexer can, by looking past it:
+
+```yaml
+- { symbol: LABEL, match: '[a-zA-Z_][a-zA-Z_0-9]*', lookahead: '[ \t\r\n]*:[ \t\r\n]*(\{|for[ (]|while[ (])' }
+- { symbol: IDENT, match: '[a-zA-Z_][a-zA-Z_0-9]*' }
+```
+
+The token is the `match:` text alone; the lookahead's bytes are scanned again as the next tokens. A lookahead rule
+competes in longest-match on the length of its `match:` (the longest one is tried), and a tie still goes to the
+rule listed first, so the LABEL rule above sits before IDENT. Lookahead rules get DFAs of their own, run after the
+state's DFA, so a state without them pays nothing. `PipeBytesLexer` reads further when a lookahead runs off the
+end of the buffered bytes.
 
 Factories: `PipeBytesLexer.FromBytes(ReadOnlyMemory<byte>, …)`,
 `FromStream(Stream, …)`, `FromString(string, …)`.

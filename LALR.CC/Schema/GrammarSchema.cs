@@ -122,6 +122,13 @@ public sealed class LexRuleSchema
     /// </summary>
     public string Match { get; set; }
 
+    /// <summary>
+    /// Optional trailing context, in the same dialect as <see cref="Match"/>: the rule matches only
+    /// where this pattern matches right after <see cref="Match"/>'s text, which it does not consume
+    /// (flex's <c>r/s</c>). The rule competes in longest-match on its own match's length.
+    /// </summary>
+    public string Lookahead { get; set; }
+
     /// <summary>State name to push on match. Mutually exclusive with <see cref="Pop"/> and <see cref="Action"/>.</summary>
     public string Push { get; set; }
 

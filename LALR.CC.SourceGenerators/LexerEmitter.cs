@@ -88,9 +88,24 @@ internal static class LexerEmitter
                     continue;
                 }
 
+                string? lookaheadExpr = null;
+                if (!string.IsNullOrEmpty(rule.Lookahead))
+                {
+                    try
+                    {
+                        lookaheadExpr = RegexEmitter.Emit(rule.Lookahead);
+                    }
+                    catch (RegexFormatException ex)
+                    {
+                        errors.Add(new RegexError(stateName, i, rule.Lookahead, ex.Message));
+                        continue;
+                    }
+                }
+
                 var instruction = ResolveInstruction(rule, schema);
                 compiled[i] = "new " + LexRuleFqn + "(" + symbolId.ToString(CultureInfo.InvariantCulture)
-                    + ", " + patternExpr + ", " + (instruction is null ? "null" : StringLit(instruction)) + ")";
+                    + ", " + patternExpr + ", " + (instruction is null ? "null" : StringLit(instruction))
+                    + (lookaheadExpr is null ? "" : ", " + lookaheadExpr) + ")";
             }
             states.Add((stateName, compiled));
         }
