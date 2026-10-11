@@ -309,6 +309,23 @@ public static class SchemaCompiler
             throw new SchemaCompilationException($"{path}.match: {ex.Message}", ex);
         }
 
+        IRx lookahead = null;
+        if (rule.Lookahead is not null)
+        {
+            if (rule.Lookahead.Length == 0)
+            {
+                throw new SchemaCompilationException($"{path}.lookahead is empty");
+            }
+            try
+            {
+                lookahead = IRxParser.Parse(rule.Lookahead);
+            }
+            catch (FormatException ex)
+            {
+                throw new SchemaCompilationException($"{path}.lookahead: {ex.Message}", ex);
+            }
+        }
+
         // Mutual-exclusion check: at most one of (Push, Pop, Action) may be set.
         var instructions = 0;
         if (!string.IsNullOrEmpty(rule.Push))
@@ -353,7 +370,7 @@ public static class SchemaCompiler
             instruction = PipeBytesLexer.Ignore;
         }
 
-        return new LexRule(symbolId, pattern, instruction);
+        return new LexRule(symbolId, pattern, instruction, lookahead);
     }
 }
 

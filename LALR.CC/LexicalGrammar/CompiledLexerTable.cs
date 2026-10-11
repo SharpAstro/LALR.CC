@@ -22,11 +22,23 @@ namespace LALR.CC.LexicalGrammar;
 /// </remarks>
 internal sealed class CompiledLexerTable
 {
-    /// <summary>One lexer state: its byte DFA, whose pattern ids index <see cref="Rules"/>.</summary>
-    internal readonly struct State(Dfa.Dfa byteDfa, LexRule[] rules)
+    /// <summary>One lexer state: its byte DFA, whose pattern ids index <see cref="Rules"/>, and its
+    /// trailing-context rules, which the DFA leaves out.</summary>
+    internal readonly struct State(Dfa.Dfa byteDfa, LexRule[] rules, LookaheadRule[] lookaheads)
     {
         public Dfa.Dfa ByteDfa { get; } = byteDfa;
         public LexRule[] Rules { get; } = rules;
+        public LookaheadRule[] Lookaheads { get; } = lookaheads;
+    }
+
+    /// <summary>A rule with trailing context (<see cref="LexRule.Lookahead"/>): its index in
+    /// <see cref="State.Rules"/>, a DFA for its pattern and one for its lookahead. A lexer runs them
+    /// after the state's DFA, so the rule competes in longest-match on the pattern's length.</summary>
+    internal readonly struct LookaheadRule(int rule, Dfa.Dfa head, Dfa.Dfa trail)
+    {
+        public int Rule { get; } = rule;
+        public Dfa.Dfa Head { get; } = head;
+        public Dfa.Dfa Trail { get; } = trail;
     }
 
     private static readonly ConditionalWeakTable<LexRule[], CompiledLexerTable> Cache = new();
@@ -96,15 +108,79 @@ internal sealed class CompiledLexerTable
             }
             // Each rule's index becomes its DFA pattern id, so the smallest accepting id
             // at any DFA state corresponds to the first matching rule (first-pattern-wins).
-            var dfaPatterns = new (IRx, int)[rules.Length];
+            // A trailing-context rule gets DFAs of its own instead, which keep its index.
+            var dfaPatterns = new List<(IRx, int)>(rules.Length);
+            var lookaheads = new List<LookaheadRule>();
             for (var i = 0; i < rules.Length; i++)
             {
-                dfaPatterns[i] = (rules[i].Pattern, i);
+                if (rules[i].Lookahead is { } trail)
+                {
+                    lookaheads.Add(new LookaheadRule(i, CompileOne(rules[i].Pattern), CompileOne(trail)));
+                }
+                else
+                {
+                    dfaPatterns.Add((rules[i].Pattern, i));
+                }
             }
             var copy = (LexRule[])rules.Clone();
-            states[name] = new State(Utf8DfaLowering.Lower(DfaCompiler.CompileMany(dfaPatterns)), copy);
+            var dfa = dfaPatterns.Count > 0
+                ? Utf8DfaLowering.Lower(DfaCompiler.CompileMany(dfaPatterns))
+                : new Dfa.Dfa(new[] { new DfaState(-1, Array.Empty<DfaTransition>()) });   // matches nothing
+            states[name] = new State(dfa, copy, lookaheads.ToArray());
             source[name] = copy;
         }
         return new CompiledLexerTable(states, source);
+    }
+
+    private static Dfa.Dfa CompileOne(IRx pattern) => Utf8DfaLowering.Lower(DfaCompiler.CompileMany(new[] { (pattern, 0) }));
+
+    /// <summary>Let the trailing-context rules of <paramref name="state"/> compete with the DFA's best
+    /// match over <paramref name="input"/> (the bytes from the token start): a rule whose pattern
+    /// matches longer, or as long with an earlier rule index, wins when its lookahead matches at the
+    /// pattern's end. The pattern's longest match is the one tried. Returns false, changing nothing,
+    /// when a DFA ran off the end of an <paramref name="input"/> that is not
+    /// <paramref name="complete"/>, so the answer needs more bytes.</summary>
+    internal static bool ApplyLookaheads(in State state, ReadOnlySpan<byte> input, bool complete, ref long bestLen, ref int bestPattern)
+    {
+        var len = bestLen;
+        var pattern = bestPattern;
+        foreach (var la in state.Lookaheads)
+        {
+            var (headLen, headAtEnd) = Run(la.Head, input, firstAccept: false);
+            if (headAtEnd && !complete) { return false; }
+            if (headLen <= 0) { continue; }
+            if (headLen < len || (headLen == len && pattern >= 0 && la.Rule > pattern)) { continue; }
+            var (trailLen, trailAtEnd) = Run(la.Trail, input.Slice((int)headLen), firstAccept: true);
+            if (trailLen < 0)
+            {
+                if (trailAtEnd && !complete) { return false; }
+                continue;
+            }
+            len = headLen;
+            pattern = la.Rule;
+        }
+        bestLen = len;
+        bestPattern = pattern;
+        return true;
+    }
+
+    /// <summary>The longest accepting prefix of <paramref name="input"/> under <paramref name="dfa"/> (or the first, with
+    /// <paramref name="firstAccept"/>), -1 for none, and whether the DFA was still running at the input's end.</summary>
+    private static (long Length, bool AtEnd) Run(Dfa.Dfa dfa, ReadOnlySpan<byte> input, bool firstAccept)
+    {
+        var state = dfa.Start;
+        long best = dfa.States[state].IsAccept ? 0 : -1;
+        if (best == 0 && firstAccept) { return (0, false); }
+        for (var i = 0; i < input.Length; i++)
+        {
+            state = dfa.Step(state, input[i]);
+            if (state < 0) { return (best, false); }
+            if (dfa.States[state].IsAccept)
+            {
+                best = i + 1;
+                if (firstAccept) { return (best, false); }
+            }
+        }
+        return (best, true);
     }
 }

@@ -149,6 +149,13 @@ public sealed class BytesLexer : ISyncIterator<Item>
             }
         }
 
+        if (compiled.Lookaheads.Length > 0)
+        {
+            long laLen = bestLen;
+            CompiledLexerTable.ApplyLookaheads(compiled, span.Slice(_position), complete: true, ref laLen, ref bestPattern);
+            bestLen = (int)laLen;
+        }
+
         if (bestPattern >= 0 && bestLen > 0)
         {
             var matched = _bytes.Slice(_position, bestLen);

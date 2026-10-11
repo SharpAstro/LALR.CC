@@ -202,6 +202,10 @@ internal static class CodeEmitter
         {
             sb.Append("                new() { Symbol = ").Append(StringLit(rule.Symbol))
               .Append(", Match = ").Append(StringLit(rule.Match));
+            if (rule.Lookahead is not null)
+            {
+                sb.Append(", Lookahead = ").Append(StringLit(rule.Lookahead));
+            }
             if (!string.IsNullOrEmpty(rule.Push))
             {
                 sb.Append(", Push = ").Append(StringLit(rule.Push));
