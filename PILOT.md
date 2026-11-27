@@ -18,6 +18,15 @@ needs to plan, build, check and land.
 - A consumer's change (sebgod/dotcc pins this package) is its own flight in that repo:
   `pilot follow-up sebgod/dotcc --title ...`, never `gh issue create`.
 
+## Packages first
+
+- A consumer (sebgod/dotcc) builds against this package. A consumer feature that needs an unreleased change here is a
+  LALR.CC flight first; the consumer pins that PR's preview or waits for the release, and moves the pin to the release
+  before it lands.
+- Label a LALR.CC PR `preview` and CI publishes SharpAstro.LALR.CC as `<Major>.<Minor>.<Patch+1>-pr<N>.<run>.<attempt>`
+  (a same-repo PR only; nuget.org keeps every prerelease, so label only when a consumer needs one).
+- An exception that must build sibling source is named in the consumer's flight.
+
 ## Build and check
 
 Run from the repo root. CI builds and tests `-c Release` on Linux; so does a leg.
