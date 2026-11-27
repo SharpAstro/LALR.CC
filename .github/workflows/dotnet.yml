@@ -33,13 +33,22 @@ on:
   pull_request:
     branches: [master]
     # Listing types replaces the default set, so the defaults are spelled out. 'labeled' is the
-    # addition: labelling an already open PR 'preview' must start a run. A run for any other label
-    # just rebuilds the PR and publishes nothing.
+    # addition: labelling an already open PR 'preview' must start a run. A labeled run for any other
+    # label is skipped by the build job's if:, so labels that pilot toggles on a PR that already
+    # carries 'preview' do not rebuild it or publish another permanent prerelease.
     types: [opened, synchronize, reopened, labeled]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'preview'
+    # One run per PR at a time: opened and labeled(preview) fire together, and a push during a
+    # build replaces it, so only the newest builds (and publishes). Keyed by run id for a push or
+    # tag, and cancel-in-progress only for a pull_request, so a master or tag build is never
+    # cancelled. The cancel only ever hits this job, never a publish job mid-push.
+    concurrency:
+      group: build-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       # One preview condition: a pull_request whose PR carries the 'preview' label and whose head
       # branch lives in THIS repository (a fork PR gets no secrets and must not try).
@@ -77,9 +86,10 @@ jobs:
               ''|*[!0-9]*) echo "::error::preview build without a numeric pull request number (got '$PR_NUMBER')"; exit 1 ;;
             esac
             IFS=. read -r major minor patch <<< "$csproj_version"
-            version="${major}.${minor}.$((patch + 1))-pr${PR_NUMBER}.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+            version="${major}.${minor}.$((10#$patch + 1))-pr${PR_NUMBER}.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
             VERSION_ARGS="-p:Version=${version}"
             echo "Preview version: $version"
+            echo "Preview package: SharpAstro.LALR.CC $version" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "VERSION_ARGS=${VERSION_ARGS}" >> "$GITHUB_ENV"
 
