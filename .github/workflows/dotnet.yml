@@ -44,8 +44,9 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'preview'
     # One run per PR at a time: opened and labeled(preview) fire together, and a push during a
     # build replaces it, so only the newest builds (and publishes). Keyed by run id for a push or
-    # tag and for a skipped label event (so it cannot cancel the PR's real build), and cancel-in-progress only for a pull_request, so a master or tag build is never
-    # cancelled. The cancel only ever hits this job, never a publish job mid-push.
+    # tag and for a skipped label event (so it cannot cancel the PR's real build), and
+    # cancel-in-progress only for a pull_request, so a master or tag build is never cancelled.
+    # The cancel only ever hits this job, never a publish job mid-push.
     concurrency:
       group: build-${{ (github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'preview') && github.event.pull_request.number) || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
