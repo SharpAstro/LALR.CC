@@ -89,7 +89,23 @@ public sealed class ParserTableBuilder
 
     public IReadOnlyList<GrammarConflict> Conflicts => _conflicts;
 
-    public ParserTableBuilder(Grammar grammar)
+    /// <summary>
+    /// Builds the tables for <paramref name="grammar"/>. The resolved-conflict dump prefix, if any, comes from
+    /// the <c>LALRCC_RESOLVED_DUMP</c> environment variable.
+    /// </summary>
+    /// <param name="grammar">The grammar to build tables for.</param>
+    public ParserTableBuilder(Grammar grammar) : this(grammar, "")
+    {
+    }
+
+    /// <summary>
+    /// Builds the tables for <paramref name="grammar"/> and, when a dump prefix is known, writes the
+    /// resolved conflicts (KEEP and DROP lines) to <c>&lt;prefix&gt;.&lt;symbol count&gt;.txt</c>.
+    /// </summary>
+    /// <param name="grammar">The grammar to build tables for.</param>
+    /// <param name="resolvedDumpPrefix">The dump file prefix; when empty, the <c>LALRCC_RESOLVED_DUMP</c>
+    /// environment variable is used instead, and when that is unset too nothing is written.</param>
+    public ParserTableBuilder(Grammar grammar, string resolvedDumpPrefix)
     {
         _lrGotos = [];
         _gotoPrecedence = [];
@@ -123,7 +139,9 @@ public sealed class ParserTableBuilder
         _parseTable = new ParseTable(nLalrStates, nTokens);
         GenerateParseTable();
 #pragma warning disable RS1035
-        var dump = System.Environment.GetEnvironmentVariable("LALRCC_RESOLVED_DUMP");
+        var dump = !string.IsNullOrEmpty(resolvedDumpPrefix)
+            ? resolvedDumpPrefix
+            : System.Environment.GetEnvironmentVariable("LALRCC_RESOLVED_DUMP");
         if (!string.IsNullOrEmpty(dump))
         {
             var lines = new List<string>(new HashSet<string>(_diagResolved));

@@ -104,16 +104,45 @@ public sealed class GrammarSourceGenerator : IIncrementalGenerator
                     ? ns
                     : DefaultNamespace);
 
+        // The resolved-conflict dump prefix (MSBuild property LalrccResolvedDump) is part of the pipeline input,
+        // not read as a side effect inside Emit: the compiler server caches generator drivers across builds, so
+        // a changed property must change an input for Emit to run again and write the dump at the new prefix.
+        // A value-equal tuple of strings keeps the incremental cache stable while the property is unchanged.
+        var dumpProvider = context.AnalyzerConfigOptionsProvider
+            .Select(static (options, _) =>
+            {
+                options.GlobalOptions.TryGetValue("build_property.LalrccResolvedDump", out var prefix);
+                options.GlobalOptions.TryGetValue("build_property.MSBuildProjectDirectory", out var projectDir);
+                return (Prefix: prefix ?? "", ProjectDirectory: projectDir ?? "");
+            });
+
         var grammarFiles = context.AdditionalTextsProvider
             .Where(static text => text.Path.EndsWith(YamlFileSuffix, StringComparison.OrdinalIgnoreCase))
-            .Combine(rootNamespaceProvider);
+            .Combine(rootNamespaceProvider)
+            .Combine(dumpProvider)
+            .Select(static (pair, _) => (
+                Text: pair.Left.Left,
+                RootNamespace: pair.Left.Right,
+                DumpPrefix: ResolveDumpPrefix(pair.Right.Prefix, pair.Right.ProjectDirectory) ?? ""));
 
         context.RegisterSourceOutput(grammarFiles, Emit);
     }
 
-    private static void Emit(SourceProductionContext context, (AdditionalText Text, string RootNamespace) input)
+    /// <summary>
+    /// Resolves the <c>LalrccResolvedDump</c> property: null for an unset or empty value, the value as is when
+    /// rooted, else joined onto the project directory (as is when there is none). Pure, since file access is
+    /// banned in the generator.
+    /// </summary>
+    internal static string? ResolveDumpPrefix(string? property, string? projectDirectory)
     {
-        var (additionalText, rootNamespace) = input;
+        if (string.IsNullOrEmpty(property)) { return null; }
+        if (Path.IsPathRooted(property) || string.IsNullOrEmpty(projectDirectory)) { return property; }
+        return Path.Combine(projectDirectory, property);
+    }
+
+    private static void Emit(SourceProductionContext context, (AdditionalText Text, string RootNamespace, string DumpPrefix) input)
+    {
+        var (additionalText, rootNamespace, dumpPrefix) = input;
         var path = additionalText.Path;
         var content = additionalText.GetText(context.CancellationToken)?.ToString();
 
@@ -212,7 +241,7 @@ public sealed class GrammarSourceGenerator : IIncrementalGenerator
         var tablesEmitted = false;
         if (validationErrors.Count == 0)
         {
-            var emit = TablesEmitter.Emit(schema, rootNamespace, className);
+            var emit = TablesEmitter.Emit(schema, rootNamespace, className, dumpPrefix);
             if (emit.HasSchemaError)
             {
                 // Slipped past SchemaValidator — surface as LALR0003 so the user

@@ -28,7 +28,7 @@ internal static class TablesEmitter
     /// for that); <c>conflicts</c> is the list of unresolved S/R + R/R cells
     /// the caller should turn into LALR0004 diagnostics.
     /// </summary>
-    public static EmitResult Emit(GrammarSchema schema, string namespaceName, string className)
+    public static EmitResult Emit(GrammarSchema schema, string namespaceName, string className, string resolvedDumpPrefix)
     {
         // Build the Grammar from the schema. We can't link SchemaCompiler.Compile
         // into the netstandard2.0 generator because it touches LexicalGrammar.Item
@@ -50,7 +50,7 @@ internal static class TablesEmitter
             return EmitResult.SchemaFailure(ex.Message);
         }
 
-        var builder = new ParserTableBuilder(grammar);
+        var builder = new ParserTableBuilder(grammar, resolvedDumpPrefix);
         if (builder.Conflicts.Count > 0)
         {
             // Don't emit Tables.g.cs when the grammar has conflicts — the
