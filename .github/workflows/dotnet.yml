@@ -10,7 +10,11 @@ name: dotnet
 #                            with NuGet.org push permissions; needs to be
 #                            granted to this repo under the org's secret
 #                            "Repositories with access" list)
-#   - pull_request → master → restore/build/test only (no pack, no publish)
+#   - pull_request → master → restore/build/test only (no pack, no publish),
+#                            except a same-repo PR labelled "preview": that
+#                            also packs and publishes SharpAstro.LALR.CC to
+#                            NuGet as the prerelease
+#                            <Major>.<Minor>.<Patch+1>-pr<N>.<run>.<attempt>
 #
 # Conventions:
 #   - We pack from the runtime project only; it bundles the source generator +
@@ -28,10 +32,18 @@ on:
     tags: ['v*']
   pull_request:
     branches: [master]
+    # Listing types replaces the default set, so the defaults are spelled out. 'labeled' is the
+    # addition: labelling an already open PR 'preview' must start a run. A run for any other label
+    # just rebuilds the PR and publishes nothing.
+    types: [opened, synchronize, reopened, labeled]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # One preview condition: a pull_request whose PR carries the 'preview' label and whose head
+      # branch lives in THIS repository (a fork PR gets no secrets and must not try).
+      IS_PREVIEW: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'preview') && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -44,11 +56,38 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Preview version
+        # Preview form: <Major>.<Minor>.<Patch+1>-pr<N>.<run>.<attempt>, computed from the csproj
+        # <Version> (a flight never edits it). It sorts above the current release (a prerelease of
+        # the next patch) and below whatever release comes next, so a consumer's pin only moves
+        # forward; the dot-separated numeric identifiers order by run, then attempt. Passed as
+        # -p:Version only, so FileVersion stays X.Y.Z.0 (a prerelease tag is illegal there).
+        # Event values come in through env:, never interpolated into the script.
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          VERSION_ARGS=""
+          if [ "$IS_PREVIEW" = "true" ]; then
+            csproj_version=$(grep -oP '<Version>\K[^<]+' LALR.CC/LALR.CC.csproj)
+            if ! printf '%s' "$csproj_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::csproj <Version> is not digits.digits.digits (got '$csproj_version')"
+              exit 1
+            fi
+            case "$PR_NUMBER" in
+              ''|*[!0-9]*) echo "::error::preview build without a numeric pull request number (got '$PR_NUMBER')"; exit 1 ;;
+            esac
+            IFS=. read -r major minor patch <<< "$csproj_version"
+            version="${major}.${minor}.$((patch + 1))-pr${PR_NUMBER}.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+            VERSION_ARGS="-p:Version=${version}"
+            echo "Preview version: $version"
+          fi
+          echo "VERSION_ARGS=${VERSION_ARGS}" >> "$GITHUB_ENV"
+
       - name: Restore
         run: dotnet restore LALR.CC.sln
 
       - name: Build (Release)
-        run: dotnet build LALR.CC.sln -c Release --no-restore --nologo
+        run: dotnet build LALR.CC.sln -c Release --no-restore --nologo $VERSION_ARGS
 
       - name: Test
         run: dotnet test LALR.CC.Tests/LALR.CC.Tests.csproj -c Release --no-build --nologo
@@ -65,11 +104,11 @@ jobs:
                 | grep -oE '^Accept.*' | sed 's/^Accept ([^)]*): /Accept: /')
 
       - name: Pack
-        if: github.event_name == 'push'
-        run: dotnet pack LALR.CC/LALR.CC.csproj -c Release --no-build --nologo -o packages
+        if: github.event_name == 'push' || env.IS_PREVIEW == 'true'
+        run: dotnet pack LALR.CC/LALR.CC.csproj -c Release --no-build --nologo -o packages $VERSION_ARGS
 
       - name: Upload package artifacts
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || env.IS_PREVIEW == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: nupkg
@@ -115,5 +154,30 @@ jobs:
         run: >
           dotnet nuget push "packages/*.nupkg"
           --api-key "${{ secrets.NUGET_API_KEY }}"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
+  # Preview packages. Opt-in by the 'preview' label because nuget.org prereleases are permanent
+  # (unlist, never delete). Only for a PR whose head branch is in this repository: a fork PR gets
+  # no secrets and must not try. The tag publish job cannot fire on a pull_request, so nothing is
+  # pushed twice. --skip-duplicate makes a re-run of the same run and attempt harmless.
+  publish-preview:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'preview') && github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: nupkg
+          path: packages
+
+      - name: Push preview to NuGet
+        # The key goes in through env:, so it is never part of the script text.
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: >
+          dotnet nuget push "packages/*.nupkg"
+          --api-key "$NUGET_API_KEY"
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
