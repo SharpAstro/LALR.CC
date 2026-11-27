@@ -51,4 +51,8 @@
     <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
   </PropertyGroup>
 
+  <!-- The in-tree projects reference the generator by ProjectReference, so NuGet's build/
+       import of this file never reaches them; import it here instead. -->
+  <Import Project="$(MSBuildThisFileDirectory)LALR.CC/build/SharpAstro.LALR.CC.props" />
+
 </Project>
