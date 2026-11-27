@@ -24,7 +24,8 @@ needs to plan, build, check and land.
   LALR.CC flight first; the consumer pins that PR's preview or waits for the release, and moves the pin to the release
   before it lands.
 - Label a LALR.CC PR `preview` and CI publishes SharpAstro.LALR.CC as `<Major>.<Minor>.<Patch+1>-pr<N>.<run>.<attempt>`
-  (a same-repo PR only; nuget.org keeps every prerelease, so label only when a consumer needs one).
+  (a same-repo PR only; nuget.org keeps every prerelease, so label only when a consumer needs one). The exact version is in the run's step summary; NU1102 can show for a few
+  minutes until nuget.org serves the package.
 - An exception that must build sibling source is named in the consumer's flight.
 
 ## Build and check
