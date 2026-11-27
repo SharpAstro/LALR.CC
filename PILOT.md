@@ -27,8 +27,9 @@ dotnet build LALR.CC.sln -c Release
 dotnet test LALR.CC.Tests/LALR.CC.Tests.csproj -c Release --no-build
 ```
 
-- Tests are xUnit v3 on Microsoft.Testing.Platform (no VSTest: `--logger` and `--blame-*` fail the run). The suite
-  is small and fast, so a leg runs all of it. To narrow while iterating:
+- Tests are xUnit v3 on Microsoft.Testing.Platform (no VSTest: `--logger` and `--blame-*` fail the run). A leg's
+  check runs the whole suite, planned with `whole-suite`: the suite is 393 tests and takes about 3 s (CI,
+  2026-10-14), so a filter saves nothing. To narrow while iterating:
   `dotnet run --project LALR.CC.Tests/LALR.CC.Tests.csproj -c Release --no-build -- --filter-method "*Name*"`.
 - A change to the YAML schema, the generator or the lexer keeps stage 0 and stage 1 in parity: CI diffs the
   `Accept` lines of `dotnet run --project Bootstrap/Bootstrap.csproj --no-build -c Release` against
