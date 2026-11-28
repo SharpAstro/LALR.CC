@@ -20,7 +20,8 @@ public sealed class ResolvedDumpEnvironmentCollection
 
 /// <summary>
 /// The resolved-conflict dump's fallback: an empty prefix reads <c>LALRCC_RESOLVED_DUMP</c>, and a
-/// prefix given to the builder wins over the variable.
+/// prefix given to the builder wins over the variable. A prefix in a folder that does not exist yet
+/// gets that folder made.
 /// </summary>
 [Collection(ResolvedDumpEnvironmentCollection.Name)]
 public class ResolvedDumpEnvironmentTests
@@ -108,6 +109,19 @@ public class ResolvedDumpEnvironmentTests
             new ParserTableBuilder(SampleArithmetic(), propPrefix);
             AssertDumpWritten(propPrefix);
             Assert.False(File.Exists(envPrefix + ".4.txt"), "the variable's dump was written although a prefix was given");
+        });
+    }
+
+    [Fact]
+    public void PrefixInMissingFolder_CreatesTheFolder()
+    {
+        WithEnvPrefix((dir, _) =>
+        {
+            var folder = Path.Combine(dir, "missing", "deeper");
+            Assert.False(Directory.Exists(folder));
+            var prefix = Path.Combine(folder, "prop");
+            new ParserTableBuilder(SampleArithmetic(), prefix);
+            AssertDumpWritten(prefix);
         });
     }
 }

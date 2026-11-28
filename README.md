@@ -357,9 +357,9 @@ won) or `DROP` (the one that lost). Ask for it with the MSBuild property:
 dotnet build <proj> -c Release --no-incremental -p:LalrccResolvedDump=<prefix>
 ```
 
-A relative prefix resolves against the project directory, and the prefix's
-directory must already exist (`obj/` always does, so `obj/lalrcc-resolved` is a
-safe choice); the generator creates no folder. `--no-incremental`
+A relative prefix resolves against the project directory, and a folder in the
+prefix that does not exist yet is created, so `obj/lalrcc/resolved` works on a
+clean tree as well as `obj/lalrcc-resolved` does. `--no-incremental`
 matters because the generator only runs when the compiler runs; an up-to-date
 project skips it and writes nothing. The package ships a props file that makes
 the property visible to the generator, so a consumer needs no csproj change.

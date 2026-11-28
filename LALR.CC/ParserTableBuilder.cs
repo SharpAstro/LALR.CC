@@ -100,7 +100,8 @@ public sealed class ParserTableBuilder
 
     /// <summary>
     /// Builds the tables for <paramref name="grammar"/> and, when a dump prefix is known, writes the
-    /// resolved conflicts (KEEP and DROP lines) to <c>&lt;prefix&gt;.&lt;symbol count&gt;.txt</c>.
+    /// resolved conflicts (KEEP and DROP lines) to <c>&lt;prefix&gt;.&lt;symbol count&gt;.txt</c>,
+    /// creating the prefix's folder when it does not exist yet.
     /// </summary>
     /// <param name="grammar">The grammar to build tables for.</param>
     /// <param name="resolvedDumpPrefix">The dump file prefix; when empty, the <c>LALRCC_RESOLVED_DUMP</c>
@@ -146,7 +147,15 @@ public sealed class ParserTableBuilder
         {
             var lines = new List<string>(new HashSet<string>(_diagResolved));
             lines.Sort(System.StringComparer.Ordinal);
-            System.IO.File.WriteAllLines(dump + "." + _grammar.SymbolNames.Length + ".txt", lines);
+            var path = dump + "." + _grammar.SymbolNames.Length + ".txt";
+            // A prefix in a folder that does not exist yet (obj/lalrcc/resolved on a clean tree) gets
+            // its folder made here, rather than WriteAllLines throwing out of the generator.
+            var folder = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path));
+            if (!string.IsNullOrEmpty(folder))
+            {
+                System.IO.Directory.CreateDirectory(folder);
+            }
+            System.IO.File.WriteAllLines(path, lines);
         }
 #pragma warning restore RS1035
     }
