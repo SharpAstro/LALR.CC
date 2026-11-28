@@ -40,7 +40,8 @@ public class GrammarSourceGeneratorTests
 
     /// <summary>Drive the generator and return (generated source files, diagnostics).</summary>
     private static (ImmutableArray<SyntaxTree> GeneratedTrees, ImmutableArray<Diagnostic> Diagnostics) RunGenerator(
-        string yamlContent, string yamlPath = "test.lalr.yaml", string rootNamespace = "TestSpace")
+        string yamlContent, string yamlPath = "test.lalr.yaml", string rootNamespace = "TestSpace",
+        IReadOnlyDictionary<string, string> buildProperties = null)
     {
         // Bring along references to the BCL plus the runtime library so the
         // generated code is compilable in this test's compilation context.
@@ -61,7 +62,7 @@ public class GrammarSourceGeneratorTests
         var driver = CSharpGeneratorDriver.Create(
             generators: [generator.AsSourceGenerator()],
             additionalTexts: [new InMemoryAdditionalText(yamlPath, yamlContent)],
-            optionsProvider: new OptionsProvider(rootNamespace));
+            optionsProvider: new OptionsProvider(rootNamespace, buildProperties));
 
         driver = (CSharpGeneratorDriver)driver.RunGenerators(compilation);
         var result = driver.GetRunResult();
@@ -73,18 +74,19 @@ public class GrammarSourceGeneratorTests
     /// to the generator. Roslyn's default provider returns nothing, which would make every
     /// generator emit into <c>Generated</c>.
     /// </summary>
-    private sealed class OptionsProvider(string rootNamespace) : AnalyzerConfigOptionsProvider
+    private sealed class OptionsProvider(string rootNamespace, IReadOnlyDictionary<string, string> extra = null) : AnalyzerConfigOptionsProvider
     {
-        private readonly RootNsOptions _global = new(rootNamespace);
+        private readonly RootNsOptions _global = new(rootNamespace, extra);
 
         public override AnalyzerConfigOptions GlobalOptions => _global;
         public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => _global;
         public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => _global;
 
-        private sealed class RootNsOptions(string rootNamespace) : AnalyzerConfigOptions
+        private sealed class RootNsOptions(string rootNamespace, IReadOnlyDictionary<string, string> extra) : AnalyzerConfigOptions
         {
             public override bool TryGetValue(string key, out string value)
             {
+                if (extra != null && extra.TryGetValue(key, out value)) { return true; }
                 if (key == "build_property.RootNamespace")
                 {
                     value = rootNamespace;
@@ -109,6 +111,106 @@ public class GrammarSourceGeneratorTests
     public void ClassNameDerivation_HandlesCommonShapes(string path, string expected)
     {
         Assert.Equal(expected, GrammarSourceGenerator.DeriveClassName(path));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Resolved-conflict dump property (LalrccResolvedDump)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("dump/out", "/proj", "/proj/dump/out")]
+    [InlineData("/abs/out", "/proj", "/abs/out")]
+    [InlineData("", "/proj", null)]
+    [InlineData(null, "/proj", null)]
+    [InlineData("dump/out", "", "dump/out")]
+    public void ResolveDumpPrefix_HandlesCases(string property, string projectDir, string expected)
+    {
+        var actual = GrammarSourceGenerator.ResolveDumpPrefix(property, projectDir);
+        if (expected is null) { Assert.Null(actual); return; }
+        // Path.Combine uses the platform separator, so compare normalised.
+        Assert.Equal(expected.Replace('\\', '/'), actual.Replace('\\', '/'));
+    }
+
+    private static string NewTempDir()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static Dictionary<string, string> DumpProps(string prefix, string projectDir = null)
+    {
+        var props = new Dictionary<string, string> { ["build_property.LalrccResolvedDump"] = prefix };
+        if (projectDir != null) { props["build_property.MSBuildProjectDirectory"] = projectDir; }
+        return props;
+    }
+
+    private static void AssertDumpWritten(string prefix)
+    {
+        // SampleArithmetic declares 4 symbols.
+        var file = prefix + ".4.txt";
+        Assert.True(File.Exists(file), "missing " + file);
+        var text = File.ReadAllText(file);
+        Assert.Contains("KEEP", text);
+        Assert.Contains("DROP", text);
+    }
+
+    [Fact]
+    public void DumpProperty_AbsolutePrefix_WritesResolvedDump()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var prefix = System.IO.Path.Combine(dir, "resolved");
+            var (_, diags) = RunGenerator(SampleArithmetic, "arithmetic.lalr.yaml", "MyApp", DumpProps(prefix));
+            Assert.Empty(diags);
+            AssertDumpWritten(prefix);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void DumpProperty_RelativePrefix_LandsInProjectDirectory()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var (_, diags) = RunGenerator(SampleArithmetic, "arithmetic.lalr.yaml", "MyApp", DumpProps("rel", dir));
+            Assert.Empty(diags);
+            AssertDumpWritten(System.IO.Path.Combine(dir, "rel"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void DumpProperty_ChangedOnSameDriver_WritesAtNewPrefix()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var references = new[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(GrammarSchema).Assembly.Location),
+            };
+            var compilation = CSharpCompilation.Create("TestAssembly", syntaxTrees: [], references: references,
+                options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            var first = System.IO.Path.Combine(dir, "first");
+            var second = System.IO.Path.Combine(dir, "second");
+            var driver = CSharpGeneratorDriver.Create(
+                generators: [new GrammarSourceGenerator().AsSourceGenerator()],
+                additionalTexts: [new InMemoryAdditionalText("arithmetic.lalr.yaml", SampleArithmetic)],
+                optionsProvider: new OptionsProvider("MyApp", DumpProps(first)));
+            driver = (CSharpGeneratorDriver)driver.RunGenerators(compilation, TestContext.Current.CancellationToken);
+            AssertDumpWritten(first);
+            Assert.False(File.Exists(second + ".4.txt"));
+
+            driver = (CSharpGeneratorDriver)driver
+                .WithUpdatedAnalyzerConfigOptions(new OptionsProvider("MyApp", DumpProps(second)))
+                .RunGenerators(compilation, TestContext.Current.CancellationToken);
+            AssertDumpWritten(second);
+        }
+        finally { Directory.Delete(dir, true); }
     }
 
     // ──────────────────────────────────────────────────────────────────────────

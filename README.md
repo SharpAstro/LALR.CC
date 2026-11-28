@@ -346,6 +346,29 @@ The regex dialect for `match:` patterns is described in
 `LALR.CC/Schema/IRxParser.cs` — it's deliberately small (no
 alternation; express alternatives as multiple lexer rules).
 
+#### Resolved-conflict dump
+
+When a precedence group settles a conflict, the table builder can write what it
+settled. The dump goes to `<prefix>.<symbolCount>.txt`, one sorted line per
+conflict a precedence group resolved, each marked `KEEP` (the action that
+won) or `DROP` (the one that lost). Ask for it with the MSBuild property:
+
+```bash
+dotnet build <proj> -c Release --no-incremental -p:LalrccResolvedDump=<prefix>
+```
+
+A relative prefix resolves against the project directory, and a folder in the
+prefix that does not exist yet is created, so `obj/lalrcc/resolved` works on a
+clean tree as well as `obj/lalrcc-resolved` does. `--no-incremental`
+matters because the generator only runs when the compiler runs; an up-to-date
+project skips it and writes nothing. The package ships a props file that makes
+the property visible to the generator, so a consumer needs no csproj change.
+
+The environment variable `LALRCC_RESOLVED_DUMP` is the fallback, read when the
+property is unset or empty. For a build it needs `-p:UseSharedCompilation=false`,
+since the shared compiler server keeps the environment it started with. The
+runtime `Parser` also reads it when it builds a table.
+
 ---
 
 ## Preprocessor framework

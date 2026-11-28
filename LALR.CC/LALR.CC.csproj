@@ -28,6 +28,10 @@
          PackageReadmeFile / PackageLicenseFile in Directory.Build.props). -->
     <None Include="..\README.md" Pack="true" PackagePath="\" Visible="false" />
     <None Include="..\LICENSE.md" Pack="true" PackagePath="\" Visible="false" />
+    <!-- Props file named after the PackageId so NuGet imports it. Packed to build/ and
+         buildTransitive/ (so a package that depends on this one passes the properties on
+         too); it makes LalrccResolvedDump reach the source generator with no csproj change. -->
+    <None Include="build\SharpAstro.LALR.CC.props" Pack="true" PackagePath="build;buildTransitive" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>
