@@ -18,6 +18,8 @@
 x64/
 x86/
 build/
+# LALR.CC/build/ is NuGet's build folder (the props file the package ships), not build output.
+!LALR.CC/build/
 bld/
 [Bb]in/
 [Oo]bj/

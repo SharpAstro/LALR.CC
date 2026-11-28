@@ -1,0 +1,11 @@
+<Project>
+  <ItemGroup>
+    <!-- Make these MSBuild properties visible to the source generator through
+         AnalyzerConfigOptionsProvider.GlobalOptions (build_property.<Name>).
+         LalrccResolvedDump: file prefix for the resolved-conflict dump
+         (<prefix>.<symbolCount>.txt); pass it as -p:LalrccResolvedDump=<prefix>.
+         MSBuildProjectDirectory: the directory a relative prefix resolves against. -->
+    <CompilerVisibleProperty Include="LalrccResolvedDump" />
+    <CompilerVisibleProperty Include="MSBuildProjectDirectory" />
+  </ItemGroup>
+</Project>
