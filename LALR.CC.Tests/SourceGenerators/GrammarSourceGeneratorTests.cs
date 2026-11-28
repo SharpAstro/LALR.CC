@@ -201,13 +201,13 @@ public class GrammarSourceGeneratorTests
                 generators: [new GrammarSourceGenerator().AsSourceGenerator()],
                 additionalTexts: [new InMemoryAdditionalText("arithmetic.lalr.yaml", SampleArithmetic)],
                 optionsProvider: new OptionsProvider("MyApp", DumpProps(first)));
-            driver = (CSharpGeneratorDriver)driver.RunGenerators(compilation);
+            driver = (CSharpGeneratorDriver)driver.RunGenerators(compilation, TestContext.Current.CancellationToken);
             AssertDumpWritten(first);
             Assert.False(File.Exists(second + ".4.txt"));
 
             driver = (CSharpGeneratorDriver)driver
                 .WithUpdatedAnalyzerConfigOptions(new OptionsProvider("MyApp", DumpProps(second)))
-                .RunGenerators(compilation);
+                .RunGenerators(compilation, TestContext.Current.CancellationToken);
             AssertDumpWritten(second);
         }
         finally { Directory.Delete(dir, true); }
